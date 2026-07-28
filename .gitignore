@@ -24,3 +24,15 @@ frontend/test-results/
 frontend/playwright-report/
 *-server.log
 *-server.err.log
+
+# Java / Maven build output
+target/
+java-backend/target/
+java-backend/data/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
