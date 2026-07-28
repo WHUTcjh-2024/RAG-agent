@@ -5,6 +5,11 @@ server:
 rag:
   upstream-base-url: ${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}
 
+auth:
+  jwt:
+    secret: ${AUTH_JWT_SECRET:atelier-local-dev-secret-at-least-32-bytes}
+    access-token-ttl: 2h
+
 spring:
   application:
     name: atelier-java-backend
