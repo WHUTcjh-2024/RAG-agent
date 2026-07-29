@@ -8,9 +8,22 @@ services:
       - ./backend/data:/app/data
     ports:
       - "18000:18000"
+  java-backend:
+    build: ./java-backend
+    depends_on:
+      - backend
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      RAG_UPSTREAM_BASE_URL: http://backend:18000
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-atelier-local-dev-secret-at-least-32-bytes}
+      SPRING_DATASOURCE_URL: jdbc:h2:file:/app/data/atelier-java;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
+    volumes:
+      - ./java-backend/data:/app/data
+    ports:
+      - "8080:8080"
   frontend:
     build: ./frontend
     depends_on:
-      - backend
+      - java-backend
     ports:
       - "5173:80"

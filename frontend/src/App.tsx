@@ -1,7 +1,22 @@
 import { useEffect, useState } from "react";
 import { GitCompareArrows } from "lucide-react";
-import { addCart, checkout, compareProducts, fetchFacets, fetchProduct, fetchProducts, fetchSession, removeCart, streamChat } from "./api/client";
+import {
+  addCart,
+  clearCart,
+  compareProducts,
+  fetchCart,
+  fetchCurrentUser,
+  fetchFacets,
+  fetchProduct,
+  fetchProducts,
+  fetchSession,
+  login,
+  register,
+  removeCart,
+  streamChat
+} from "./api/client";
 import { CompareDrawer, CartDrawer, ProductDetailDrawer } from "./components/Drawers";
+import { AuthDrawer } from "./components/AuthDrawer";
 import { BrowseControls } from "./components/BrowseControls";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
@@ -15,6 +30,7 @@ export default function App() {
   const { language, t } = useTranslation();
   const store = useAppStore();
   const [cartOpen, setCartOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [stylistOpen, setStylistOpen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -27,10 +43,18 @@ export default function App() {
   useEffect(() => {
     fetchFacets().then(setFacets).catch((error) => setNotice(error.message));
     fetchSession(store.sessionId).then((session) => {
-      store.setCart(session.cart);
       store.setSlots(session.slots);
       store.setMessages(session.history.map((item) => ({ ...item, id: crypto.randomUUID() })));
     }).catch((error) => setNotice(error.message));
+    if (store.accessToken) {
+      Promise.all([
+        fetchCurrentUser(store.accessToken),
+        fetchCart(store.accessToken)
+      ]).then(([user, cart]) => {
+        store.setAuth(store.accessToken, user);
+        store.setCart(cart);
+      }).catch(() => store.setAuth("", null));
+    }
   }, []);
 
   useEffect(() => {
@@ -64,8 +88,6 @@ export default function App() {
         onTool: store.addTrace,
         onProducts: store.setProducts,
         onComparison: store.setComparison,
-        onCart: store.setCart,
-        onOrder: store.setOrder,
         onMessage: store.appendAssistant,
         onError: (text) => { throw new Error(text); }
       });
@@ -79,9 +101,16 @@ export default function App() {
   };
 
   const add = async (id: string) => {
+    if (!store.accessToken || !store.user) {
+      setAuthOpen(true);
+      setNotice(t("loginForCart"));
+      return;
+    }
     try {
-      const result = await addCart(store.sessionId, id);
-      store.setCart(result.cart);
+      const product = store.products.find((item) => item.article_id === id)
+        || (detail?.article_id === id ? detail : await fetchProduct(id));
+      await addCart(store.accessToken, product);
+      store.setCart(await fetchCart(store.accessToken));
       setNotice(t("added"));
     } catch (error) { setNotice(error instanceof Error ? error.message : t("addFailed")); }
   };
@@ -95,17 +124,44 @@ export default function App() {
     } catch (error) { setNotice(error instanceof Error ? error.message : t("compareFailed")); }
   };
 
-  const doCheckout = async () => {
+  const authenticate = async (
+    mode: "login" | "register",
+    credentials: { email: string; password: string; displayName?: string }
+  ) => {
+    const result = mode === "login"
+      ? await login(credentials.email, credentials.password)
+      : await register(credentials.email, credentials.password, credentials.displayName || "");
+    store.setAuth(result.accessToken, result.user);
+    store.setCart(await fetchCart(result.accessToken));
+    setAuthOpen(false);
+    setNotice(t("authSuccess"));
+  };
+
+  const logout = () => {
+    store.setAuth("", null);
+    setCartOpen(false);
+    setNotice(t("loggedOut"));
+  };
+
+  const emptyCart = async () => {
+    if (!store.accessToken) return;
     try {
-      const result = await checkout(store.sessionId);
-      if (result.order) { store.setOrder(result.order); store.setCart([]); }
-      else setNotice(result.message);
-    } catch (error) { setNotice(error instanceof Error ? error.message : t("checkoutFailed")); }
+      await clearCart(store.accessToken);
+      store.setCart([]);
+    } catch (error) { setNotice(error instanceof Error ? error.message : t("clearCartFailed")); }
   };
 
   return (
     <div className="min-h-screen bg-paper text-ink">
-      <Header cartCount={store.cart.length} onStylist={() => setStylistOpen(true)} onBrowse={browse} onCart={() => { store.setOrder(null); setCartOpen(true); }} />
+      <Header
+        cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)}
+        user={store.user}
+        onAuth={() => setAuthOpen(true)}
+        onLogout={logout}
+        onStylist={() => setStylistOpen(true)}
+        onBrowse={browse}
+        onCart={() => setCartOpen(true)}
+      />
       <main>
         <Hero products={store.products} total={total} onStylist={() => setStylistOpen(true)} />
         <section className="mx-auto max-w-[1600px] px-4 py-16 sm:px-6 lg:px-10 lg:py-24">
@@ -128,7 +184,24 @@ export default function App() {
         </div>
       )}
       {notice && <button onClick={() => setNotice("")} className="fixed bottom-5 right-5 z-40 bg-paper px-4 py-3 text-xs shadow-xl ring-1 ring-ink/10">{notice}</button>}
-      <CartDrawer open={cartOpen} cart={store.cart} order={store.order} onClose={() => setCartOpen(false)} onRemove={async (id) => { try { const result = await removeCart(store.sessionId, id); store.setCart(result.cart); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onCheckout={doCheckout} />
+      <CartDrawer
+        open={cartOpen}
+        cart={store.cart}
+        authenticated={Boolean(store.user)}
+        onClose={() => setCartOpen(false)}
+        onLogin={() => { setCartOpen(false); setAuthOpen(true); }}
+        onRemove={async (id) => {
+          if (!store.accessToken) return;
+          try {
+            await removeCart(store.accessToken, id);
+            store.setCart(await fetchCart(store.accessToken));
+          } catch (error) {
+            setNotice(error instanceof Error ? error.message : t("removeFailed"));
+          }
+        }}
+        onClear={emptyCart}
+      />
+      <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
       <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
       <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
       <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} onSubmit={submit} />

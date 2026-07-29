@@ -1,6 +1,6 @@
 # Java 后端统一入口
 
-这个服务是第一阶段 Java 网关，用来接收前端请求，并把 `/api/**` 和 `/media/**` 转发到现有 Python FastAPI 服务。
+这个服务是前端统一入口。认证和登录用户购物车由 Java 处理，其余 `/api/**` 和 `/media/**` 请求转发到 Python FastAPI。
 
 ## 端口
 
@@ -14,22 +14,21 @@ Python 后端：127.0.0.1:18000
 先启动 Python 后端：
 
 ```powershell
-cd D:\727push\backend
-.\.venv\Scripts\activate
-python -m uvicorn app.main:app --host 127.0.0.1 --port 18000 --log-level debug
+cd D:\Desktop\bytedance
+python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 18000
 ```
 
 再启动 Java 后端：
 
 ```powershell
-cd D:\727push\java-backend
+cd D:\Desktop\bytedance\java-backend
 mvn spring-boot:run
 ```
 
 检查 Java 后端：
 
 ```text
-http://127.0.0.1:8080/health
+http://127.0.0.1:8080/actuator/health
 ```
 
 检查 Java 到 Python 的代理：
@@ -60,3 +59,19 @@ Authorization: Bearer <token>
 ```
 
 第一阶段只支持本地邮箱密码账号。微信、支付宝、GitHub 登录暂不接入，只在数据模型中预留扩展字段。
+
+## 购物车接口
+
+```text
+POST   /api/cart/items
+GET    /api/cart
+PATCH  /api/cart/items/{itemId}
+DELETE /api/cart/items/{itemId}
+DELETE /api/cart
+```
+
+购物车接口均要求：
+
+```text
+Authorization: Bearer <token>
+```

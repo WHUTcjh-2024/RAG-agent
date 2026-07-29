@@ -33,10 +33,28 @@ export interface Message {
   imagePreview?: string;
 }
 
-export interface Order {
-  order_id: string;
-  status: string;
-  items: Product[];
+export interface User {
+  id: string;
+  email: string;
+  displayName: string;
+  provider: "LOCAL" | "GITHUB" | "WECHAT" | "ALIPAY";
+}
+
+export interface AuthResult {
+  user: User;
+  accessToken: string;
+}
+
+export interface CartItem {
+  id: string;
+  productId: string;
+  productName: string;
+  productImageUrl?: string | null;
+  unitPrice: number;
+  quantity: number;
+  selected: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type Slots = Record<string, string | number | string[]>;

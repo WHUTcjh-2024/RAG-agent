@@ -17,7 +17,27 @@ const products = [
   }
 ];
 
+const user = {
+  id: "00000000-0000-0000-0000-000000000001",
+  email: "e2e@example.com",
+  displayName: "E2E User",
+  provider: "LOCAL"
+};
+
+const cartItem = {
+  id: "00000000-0000-0000-0000-000000000101",
+  productId: products[0].article_id,
+  productName: products[0].prod_name,
+  productImageUrl: products[0].image_url,
+  unitPrice: products[0].price,
+  quantity: 1,
+  selected: true,
+  createdAt: "2026-07-29T00:00:00Z",
+  updatedAt: "2026-07-29T00:00:00Z"
+};
+
 async function mockApi(page: Page, restoredCart: typeof products = []) {
+  let javaCart = restoredCart.length ? [cartItem] : [];
   await page.route("**/media/**", route => route.fulfill({
     contentType: "image/svg+xml",
     body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><rect width="30" height="40" fill="#ddd"/></svg>'
@@ -27,8 +47,25 @@ async function mockApi(page: Page, restoredCart: typeof products = []) {
     index_groups: ["Ladieswear"], price_range: [0.05, 0.08]
   }}));
   await page.route("**/api/session", route => route.fulfill({ json: {
-    session_id: "e2e", slots: {}, cart: restoredCart, history: []
+    session_id: "e2e", slots: {}, history: []
   }}));
+  await page.route("**/api/auth/me", route => route.fulfill({ json: user }));
+  await page.route("**/api/cart/items", route => {
+    javaCart = [cartItem];
+    route.fulfill({ json: cartItem });
+  });
+  await page.route("**/api/cart/items/*", route => {
+    javaCart = [];
+    route.fulfill({ status: 204 });
+  });
+  await page.route("**/api/cart", route => {
+    if (route.request().method() === "DELETE") {
+      javaCart = [];
+      route.fulfill({ status: 204 });
+    } else {
+      route.fulfill({ json: { items: javaCart } });
+    }
+  });
   await page.route(/\/api\/products\?.*/, route => route.fulfill({ json: {
     page: Number(new URL(route.request().url()).searchParams.get("page") || 1),
     page_size: 12, total: 24, items: products
@@ -55,13 +92,10 @@ test("browse, filter, paginate and inspect honest commerce fields", async ({ pag
   await expect(page.getByText("数据源未提供").first()).toBeVisible();
 });
 
-test("compare, add to cart and checkout", async ({ page }) => {
+test("compare, add to Java cart and clear it", async ({ page }) => {
   await mockApi(page);
+  await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
   await page.route("**/api/compare", route => route.fulfill({ json: { products } }));
-  await page.route("**/api/cart/add", route => route.fulfill({ json: { cart: [products[0]] } }));
-  await page.route("**/api/checkout", route => route.fulfill({ json: {
-    success: true, message: "ok", order: { order_id: "LOCAL-E2E", status: "simulated", items: [products[0]] }
-  }}));
   await page.goto("/");
   await page.getByLabel("加入对比").nth(0).click();
   await page.getByLabel("加入对比").nth(1).click();
@@ -70,12 +104,14 @@ test("compare, add to cart and checkout", async ({ page }) => {
   await page.getByRole("button", { name: "关闭" }).click();
   await page.getByLabel("加入购物袋").first().click();
   await page.getByLabel("打开购物袋").click();
-  await page.getByRole("button", { name: "模拟确认订单" }).click();
-  await expect(page.getByText("订单已确认")).toBeVisible();
+  await expect(page.getByText("White Office Shirt").last()).toBeVisible();
+  await page.getByRole("button", { name: "清空购物袋" }).click();
+  await expect(page.getByText("购物袋还是空的")).toBeVisible();
 });
 
 test("restores persisted cart after reload", async ({ page }) => {
   await mockApi(page, [products[0]]);
+  await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
   await page.goto("/");
   await page.getByLabel("打开购物袋").click();
   await expect(page.getByText("White Office Shirt").last()).toBeVisible();
@@ -113,4 +149,18 @@ test("switches the complete interface to English and persists the choice", async
   await expect(page.getByPlaceholder("Search names or descriptions")).toBeVisible();
   await page.getByLabel("Open personal stylist").click();
   await expect(page.getByText("What are you dressing for?")).toBeVisible();
+});
+
+test("logs in before using the Java cart", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/auth/login", route => route.fulfill({ json: {
+    user,
+    accessToken: "e2e-token"
+  }}));
+  await page.goto("/");
+  await page.getByLabel("登录").click();
+  await page.getByLabel("邮箱").fill("e2e@example.com");
+  await page.getByLabel("密码").fill("password123");
+  await page.locator("form").getByRole("button", { name: "登录" }).click();
+  await expect(page.getByLabel("退出登录")).toBeVisible();
 });

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
-from uuid import uuid4
-
 from langchain_core.tools import BaseTool, StructuredTool
 from PIL import Image
 
@@ -87,26 +85,6 @@ class CommerceToolset:
             self.compare_products,
         )
         registry.register(
-            "add_to_cart",
-            "Add one real catalog product to the session cart.",
-            self.add_to_cart,
-        )
-        registry.register(
-            "remove_from_cart",
-            "Remove one product from the session cart.",
-            self.remove_from_cart,
-        )
-        registry.register(
-            "view_cart",
-            "Return current session cart products.",
-            self.view_cart,
-        )
-        registry.register(
-            "checkout",
-            "Create a simulated local order and clear the cart; no payment occurs.",
-            self.checkout,
-        )
-        registry.register(
             "update_user_preference",
             "Update structured preference slots for the current session.",
             self.update_user_preference,
@@ -173,40 +151,6 @@ class CommerceToolset:
             product = self.get_product_detail(product_id)
             products.append({field: product.get(field, "") for field in fields})
         return {"products": products}
-
-    def _cart_products(self, session_id: str) -> list[dict[str, Any]]:
-        return [
-            dict(self.catalog[product_id])
-            for product_id in self.memory.get(session_id).cart
-            if product_id in self.catalog
-        ]
-
-    def add_to_cart(self, session_id: str, product_id: str) -> dict[str, Any]:
-        self.get_product_detail(product_id)
-        self.memory.add_to_cart(session_id, product_id)
-        return {"cart": self._cart_products(session_id)}
-
-    def remove_from_cart(self, session_id: str, product_id: str) -> dict[str, Any]:
-        self.memory.remove_from_cart(session_id, product_id)
-        return {"cart": self._cart_products(session_id)}
-
-    def view_cart(self, session_id: str) -> dict[str, Any]:
-        return {"cart": self._cart_products(session_id)}
-
-    def checkout(self, session_id: str) -> dict[str, Any]:
-        products = self._cart_products(session_id)
-        if not products:
-            return {"success": False, "message": "购物车为空", "order": None}
-        self.memory.clear_cart(session_id)
-        return {
-            "success": True,
-            "message": "模拟下单成功，不涉及真实支付",
-            "order": {
-                "order_id": f"LOCAL-{uuid4().hex[:12].upper()}",
-                "status": "simulated",
-                "items": products,
-            },
-        }
 
     def update_user_preference(
         self, session_id: str, slots: dict[str, Any]

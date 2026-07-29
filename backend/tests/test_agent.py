@@ -36,13 +36,13 @@ def create_orchestrator(root: Path) -> ShoppingAgentOrchestrator:
 
 def test_registry_contains_real_langchain_tools(tmp_path: Path) -> None:
     orchestrator = create_orchestrator(tmp_path)
-    assert len(orchestrator.registry.tools) == 10
+    assert len(orchestrator.registry.tools) == 6
     assert all(isinstance(tool, BaseTool) for tool in orchestrator.registry.tools)
     assert "hybrid_search" in orchestrator.registry.names
-    assert "checkout" in orchestrator.registry.names
+    assert "update_user_preference" in orchestrator.registry.names
 
 
-def test_agent_recommend_compare_cart_and_checkout(tmp_path: Path) -> None:
+def test_agent_recommend_compare_and_handoff_cart(tmp_path: Path) -> None:
     orchestrator = create_orchestrator(tmp_path)
     session_id = "agent-flow"
 
@@ -61,21 +61,10 @@ def test_agent_recommend_compare_cart_and_checkout(tmp_path: Path) -> None:
     assert comparison.intent == "compare"
     assert len(comparison.comparison) == 2
 
-    first_id = recommendation.products[0]["article_id"]
     cart = orchestrator.handle("把第1件加入购物车", session_id)
-    assert cart.intent == "add_to_cart"
-    assert [item["article_id"] for item in cart.cart] == [first_id]
-
-    viewed = orchestrator.handle("查看购物车", session_id)
-    assert len(viewed.cart) == 1
-
-    checkout = orchestrator.handle("结算并模拟下单", session_id)
-    assert checkout.order is not None
-    assert checkout.order["status"] == "simulated"
-    assert checkout.order["items"][0]["article_id"] == first_id
-
-    empty_cart = orchestrator.handle("查看购物车", session_id)
-    assert empty_cart.cart == []
+    assert cart.intent == "cart_handoff"
+    assert "Java" in cart.answer
+    assert not any("cart" in trace.tool for trace in cart.tool_trace)
 
 
 class FakeHallucinatingChain:
@@ -141,7 +130,7 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
 
         stream = client.post(
             "/api/chat/stream",
-            data={"message": "查看购物车", "session_id": "api-agent"},
+            data={"message": "继续推荐红色衬衫", "session_id": "api-agent"},
         )
         assert stream.status_code == 200
         assert "event: meta" in stream.text
