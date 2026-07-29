@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
+
 from langchain_core.tools import BaseTool, StructuredTool
 from PIL import Image
 
+from app.core.agent.contracts import ErrorCode
+from app.core.agent.errors import AgentException, classify_exception
 from app.core.agent.memory import AgentMemoryStore
 from app.core.catalog_fields import enrich_commerce_fields
 
@@ -26,8 +30,37 @@ class ToolRegistry:
         try:
             tool = self._tools[name]
         except KeyError as error:
-            raise KeyError(f"Unknown tool: {name}") from error
-        return tool.invoke(arguments)
+            raise AgentException(
+                ErrorCode.TOOL_NOT_FOUND,
+                f"Unknown tool: {name}",
+                status_code=HTTPStatus.BAD_REQUEST,
+                stage="invoke_tool",
+                details={"tool": name},
+            ) from error
+        try:
+            return tool.invoke(arguments)
+        except AgentException:
+            raise
+        except ValueError as error:
+            raise AgentException(
+                ErrorCode.INVALID_TOOL_ARGUMENT,
+                str(error),
+                status_code=HTTPStatus.BAD_REQUEST,
+                stage="invoke_tool",
+                details={"tool": name},
+            ) from error
+        except (FileNotFoundError, RuntimeError, TimeoutError) as error:
+            classified = classify_exception(error, stage="invoke_tool")
+            classified.details["tool"] = name
+            raise classified from error
+        except Exception as error:
+            raise AgentException(
+                ErrorCode.TOOL_EXECUTION_FAILED,
+                "Agent tool execution failed.",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                stage="invoke_tool",
+                details={"tool": name, "error_type": type(error).__name__},
+            ) from error
 
     @property
     def tools(self) -> list[BaseTool]:

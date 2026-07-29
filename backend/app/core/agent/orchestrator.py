@@ -1,44 +1,20 @@
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.core.agent.memory import AgentMemoryStore
+from app.core.agent.contracts import AgentResponse, Intent, ToolTrace
+from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.agent.tool_registry import CommerceToolset, ToolRegistry
 from app.core.llm import GroundedRecommendationGenerator
+from app.core.request_id import normalize_request_id
 
 
-@dataclass
-class ToolTrace:
-    tool: str
-    input: dict[str, Any]
-    summary: str
-
-
-@dataclass
-class AgentResponse:
-    session_id: str
-    intent: str
-    answer: str
-    products: list[dict[str, Any]] = field(default_factory=list)
-    comparison: list[dict[str, Any]] = field(default_factory=list)
-    slots: dict[str, Any] = field(default_factory=dict)
-    tool_trace: list[ToolTrace] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "session_id": self.session_id,
-            "intent": self.intent,
-            "answer": self.answer,
-            "products": self.products,
-            "comparison": self.comparison,
-            "slots": self.slots,
-            "tool_trace": [trace.__dict__ for trace in self.tool_trace],
-        }
+logger = logging.getLogger(__name__)
 
 
 class ShoppingAgentOrchestrator:
@@ -63,21 +39,21 @@ class ShoppingAgentOrchestrator:
         self.planner = AgentPlanner(self.registry.tools)
 
     @staticmethod
-    def classify_intent(message: str, has_image: bool) -> str:
+    def classify_intent(message: str, has_image: bool) -> Intent:
         text = message.strip()
         folded = text.casefold()
         if any(term in folded for term in (
             "下单", "结算", "提交订单", "购物车", "加购",
             "checkout", "place order", "cart", "bag",
         )):
-            return "cart_handoff"
+            return Intent.CART_HANDOFF
         if any(term in folded for term in ("对比", "比较", "哪个好", "哪件更", "compare", "which is better")):
-            return "compare"
+            return Intent.COMPARE
         if has_image and text:
-            return "hybrid_search"
+            return Intent.HYBRID_SEARCH
         if has_image:
-            return "image_search"
-        return "text_recommendation"
+            return Intent.IMAGE_SEARCH
+        return Intent.TEXT_RECOMMENDATION
 
     def _resolve_product_ids(self, session_id: str, message: str) -> list[str]:
         state = self.memory.get(session_id)
@@ -92,8 +68,6 @@ class ShoppingAgentOrchestrator:
     def _trace(tool: str, arguments: dict[str, Any], result: Any) -> ToolTrace:
         if isinstance(result, dict) and "results" in result:
             summary = f"returned {len(result['results'])} products"
-        elif isinstance(result, dict) and "cart" in result:
-            summary = f"cart contains {len(result['cart'])} products"
         else:
             summary = "completed"
         safe_input = {
@@ -136,10 +110,19 @@ class ShoppingAgentOrchestrator:
         session_id: str,
         image_path: str | None = None,
         language: str = "zh",
+        request_id: str | None = None,
     ) -> AgentResponse:
+        request_id = normalize_request_id(request_id)
+        session_id = validate_session_id(session_id)
         message = message.strip()
         if not message and not image_path:
             raise ValueError("Message or image is required.")
+        logger.info(
+            "agent_request_started request_id=%s session_id=%s has_image=%s",
+            request_id,
+            session_id,
+            bool(image_path),
+        )
         self.memory.add_user_message(session_id, message or "[上传图片]")
         traces: list[ToolTrace] = []
         extracted = self.slot_extractor.extract(message)
@@ -160,6 +143,7 @@ class ShoppingAgentOrchestrator:
             lambda: self.classify_intent(message, bool(image_path)),
         )
         response = AgentResponse(
+            request_id=request_id,
             session_id=session_id,
             intent=intent,
             answer="",
@@ -167,10 +151,14 @@ class ShoppingAgentOrchestrator:
             tool_trace=traces,
         )
 
-        if intent in {"text_recommendation", "image_search", "hybrid_search"}:
-            if intent == "hybrid_search":
+        if intent in {
+            Intent.TEXT_RECOMMENDATION,
+            Intent.IMAGE_SEARCH,
+            Intent.HYBRID_SEARCH,
+        }:
+            if intent == Intent.HYBRID_SEARCH:
                 result = self._invoke(
-                    traces,
+                    response.tool_trace,
                     "hybrid_search",
                     {
                         "query": retrieval_query,
@@ -179,9 +167,9 @@ class ShoppingAgentOrchestrator:
                         "top_k": 5,
                     },
                 )
-            elif intent == "image_search":
+            elif intent == Intent.IMAGE_SEARCH:
                 result = self._invoke(
-                    traces,
+                    response.tool_trace,
                     "search_products_by_image",
                     {
                         "image_path": str(image_path),
@@ -191,7 +179,7 @@ class ShoppingAgentOrchestrator:
                 )
             else:
                 result = self._invoke(
-                    traces,
+                    response.tool_trace,
                     "search_products_by_text",
                     {"query": retrieval_query, "filters": filters, "top_k": 5},
                 )
@@ -204,20 +192,20 @@ class ShoppingAgentOrchestrator:
                 session_id, message, response.products, slots, language
             )
 
-        elif intent == "compare":
+        elif intent == Intent.COMPARE:
             product_ids = self._resolve_product_ids(session_id, message)
             if len(product_ids) < 2:
                 response.answer = "Please specify two or three products, for example: compare item 1 and item 3." if language == "en" else "请说明要对比的两到三件商品，例如“对比第1件和第3件”。"
             else:
                 result = self._invoke(
-                    traces,
+                    response.tool_trace,
                     "compare_products",
                     {"product_ids": product_ids[:3]},
                 )
                 response.comparison = result["products"]
                 response.answer = "The comparison uses verified catalog fields." if language == "en" else "已按真实商品字段整理对比结果。"
 
-        elif intent == "cart_handoff":
+        elif intent == Intent.CART_HANDOFF:
             response.answer = (
                 "The shopping bag is managed by the Java account service. "
                 "Please use the product card or shopping bag."
@@ -226,4 +214,12 @@ class ShoppingAgentOrchestrator:
             )
 
         self.memory.add_ai_message(session_id, response.answer)
+        logger.info(
+            "agent_request_completed request_id=%s session_id=%s intent=%s tools=%d products=%d",
+            request_id,
+            session_id,
+            response.intent.value,
+            len(response.tool_trace),
+            len(response.products),
+        )
         return response

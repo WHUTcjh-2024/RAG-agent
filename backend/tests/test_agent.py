@@ -78,6 +78,11 @@ class FakeHallucinatingChain:
         )
 
 
+class FakeFailingChain:
+    def invoke(self, inputs):
+        raise TimeoutError("model timed out")
+
+
 def test_llm_product_id_whitelist_drops_hallucinations() -> None:
     generator = GroundedRecommendationGenerator(chain=FakeHallucinatingChain())
     intro, reasons = generator.generate(
@@ -98,6 +103,30 @@ def test_llm_product_id_whitelist_drops_hallucinations() -> None:
     assert "9999999999" not in reasons
 
 
+def test_llm_failure_is_logged_and_falls_back(caplog) -> None:
+    generator = GroundedRecommendationGenerator(chain=FakeFailingChain())
+    with caplog.at_level("WARNING"):
+        intro, reasons = generator.generate(
+            user_query="推荐红色衬衫",
+            products=[
+                {
+                    "article_id": "0000000001",
+                    "prod_name": "Red Shirt",
+                    "product_type_name": "Shirt",
+                    "colour_group_name": "Red",
+                }
+            ],
+            slots={"color": "Red", "category": "Shirt"},
+            history=[],
+        )
+    assert intro == "根据你的需求，我从真实商品库中筛出了这些候选。"
+    assert reasons == {
+        "0000000001": "Red Shirt 属于 Shirt，颜色为 Red，与当前检索条件匹配。"
+    }
+    assert "code=MODEL_UNAVAILABLE" in caplog.text
+    assert "stage=generate_answer" in caplog.text
+
+
 def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
     text_index, image_index, _ = build_fixture_indexes(tmp_path)
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))
@@ -113,6 +142,7 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
         )
         assert response.status_code == 200, response.text
         payload = response.json()
+        assert payload["request_id"]
         assert payload["products"][0]["article_id"] == "0000000001"
         assert payload["tool_trace"][-1]["tool"] == "search_products_by_text"
 
@@ -136,4 +166,5 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
         assert "event: meta" in stream.text
         assert "event: tool" in stream.text
         assert "event: done" in stream.text
+        assert stream.headers["X-Request-Id"]
     get_orchestrator.cache_clear()
