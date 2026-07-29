@@ -1,4 +1,4 @@
-import type { Order, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace } from "../types";
+import type { AuthResult, CartItem, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
 
 export const productImage = (product: Product): string => {
   if (product.image_url) return product.image_url;
@@ -51,8 +51,6 @@ type StreamHandlers = {
   onTool: (payload: ToolTrace) => void;
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
-  onCart: (products: Product[]) => void;
-  onOrder: (order: Order) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
 };
@@ -94,8 +92,6 @@ export async function streamChat(
       if (event === "tool") handlers.onTool(payload);
       if (event === "products") handlers.onProducts(payload.items);
       if (event === "comparison") handlers.onComparison(payload.items);
-      if (event === "cart") handlers.onCart(payload.items);
-      if (event === "order") handlers.onOrder(payload);
       if (event === "message") handlers.onMessage(payload.delta || "");
       if (event === "error") handlers.onError(payload.message || "处理失败");
     }
@@ -117,24 +113,63 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 export const compareProducts = (productIds: string[]) =>
   postJson<{ products: Product[] }>("/api/compare", { product_ids: productIds });
 
-export const addCart = (sessionId: string, productId: string) =>
-  postJson<{ cart: Product[] }>("/api/cart/add", {
-    session_id: sessionId,
-    product_id: productId
-  });
-
-export const removeCart = (sessionId: string, productId: string) =>
-  postJson<{ cart: Product[] }>("/api/cart/remove", {
-    session_id: sessionId,
-    product_id: productId
-  });
-
 export const fetchSession = (sessionId: string) =>
-  postJson<{ session_id: string; slots: Slots; cart: Product[]; history: { role: "user" | "assistant"; content: string }[] }>("/api/session", {
+  postJson<{ session_id: string; slots: Slots; history: { role: "user" | "assistant"; content: string }[] }>("/api/session", {
     session_id: sessionId
   });
 
-export const checkout = (sessionId: string) =>
-  postJson<{ success: boolean; message: string; order: Order | null }>("/api/checkout", {
-    session_id: sessionId
-  });
+function authorized(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+export const register = (email: string, password: string, displayName: string) =>
+  postJson<AuthResult>("/api/auth/register", { email, password, displayName });
+
+export const login = (email: string, password: string) =>
+  postJson<AuthResult>("/api/auth/login", { email, password });
+
+export async function fetchCurrentUser(token: string): Promise<User> {
+  return (await ensureOk(await fetch("/api/auth/me", {
+    headers: authorized(token)
+  }))).json();
+}
+
+export async function fetchCart(token: string): Promise<CartItem[]> {
+  const response = await ensureOk(await fetch("/api/cart", {
+    headers: authorized(token)
+  }));
+  return (await response.json()).items;
+}
+
+export async function addCart(token: string, product: Product): Promise<CartItem> {
+  if (typeof product.price !== "number") {
+    throw new Error("商品缺少数据价格，暂时无法加入购物袋");
+  }
+  const response = await ensureOk(await fetch("/api/cart/items", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      productId: product.article_id,
+      productName: product.prod_name,
+      productImageUrl: productImage(product),
+      unitPrice: product.price,
+      quantity: 1,
+      selected: true
+    })
+  }));
+  return response.json();
+}
+
+export async function removeCart(token: string, itemId: string): Promise<void> {
+  await ensureOk(await fetch(`/api/cart/items/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+    headers: authorized(token)
+  }));
+}
+
+export async function clearCart(token: string): Promise<void> {
+  await ensureOk(await fetch("/api/cart", {
+    method: "DELETE",
+    headers: authorized(token)
+  }));
+}

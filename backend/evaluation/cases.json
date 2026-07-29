@@ -15,13 +15,13 @@
     ["找类似的通勤款", true, "hybrid_search"],
     ["对比第1件和第2件", false, "compare"],
     ["第1件和第3件哪个好", false, "compare"],
-    ["把第1件加入购物车", false, "add_to_cart"],
-    ["第2件加购", false, "add_to_cart"],
-    ["把第1件移出购物车", false, "remove_from_cart"],
-    ["查看购物车", false, "view_cart"],
-    ["我的购物车里有什么", false, "view_cart"],
-    ["结算并模拟下单", false, "checkout"],
-    ["提交订单", false, "checkout"]
+    ["把第1件加入购物车", false, "cart_handoff"],
+    ["第2件加购", false, "cart_handoff"],
+    ["把第1件移出购物车", false, "cart_handoff"],
+    ["查看购物车", false, "cart_handoff"],
+    ["我的购物车里有什么", false, "cart_handoff"],
+    ["结算并模拟下单", false, "cart_handoff"],
+    ["提交订单", false, "cart_handoff"]
   ],
   "slots": [
     ["白色衬衫", {"color": "White", "category": "Shirt"}],

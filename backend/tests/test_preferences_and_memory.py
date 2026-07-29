@@ -47,12 +47,10 @@ def test_memory_survives_store_recreation(tmp_path: Path) -> None:
     database = tmp_path / "sessions.db"
     first = AgentMemoryStore(database)
     first.update_slots("session", {"color": "Red"})
-    first.add_to_cart("session", "0000000001")
     first.add_user_message("session", "红色衬衫")
 
     restored = AgentMemoryStore(database).get("session")
     assert restored.slots == {"color": "Red"}
-    assert restored.cart == ["0000000001"]
     assert restored.history.messages[0].content == "红色衬衫"
 
 

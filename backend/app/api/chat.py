@@ -140,10 +140,6 @@ async def chat_stream(
             yield sse("products", {"items": response["products"]})
         if response["comparison"]:
             yield sse("comparison", {"items": response["comparison"]})
-        if response["cart"]:
-            yield sse("cart", {"items": response["cart"]})
-        if response["order"]:
-            yield sse("order", response["order"])
         answer = response["answer"]
         for start in range(0, len(answer), 24):
             yield sse("message", {"delta": answer[start : start + 24]})

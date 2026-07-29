@@ -26,8 +26,6 @@ class AgentResponse:
     answer: str
     products: list[dict[str, Any]] = field(default_factory=list)
     comparison: list[dict[str, Any]] = field(default_factory=list)
-    cart: list[dict[str, Any]] = field(default_factory=list)
-    order: dict[str, Any] | None = None
     slots: dict[str, Any] = field(default_factory=dict)
     tool_trace: list[ToolTrace] = field(default_factory=list)
 
@@ -38,8 +36,6 @@ class AgentResponse:
             "answer": self.answer,
             "products": self.products,
             "comparison": self.comparison,
-            "cart": self.cart,
-            "order": self.order,
             "slots": self.slots,
             "tool_trace": [trace.__dict__ for trace in self.tool_trace],
         }
@@ -70,14 +66,11 @@ class ShoppingAgentOrchestrator:
     def classify_intent(message: str, has_image: bool) -> str:
         text = message.strip()
         folded = text.casefold()
-        if any(term in folded for term in ("下单", "结算", "提交订单", "checkout", "place order")):
-            return "checkout"
-        if any(term in folded for term in ("移出购物车", "删除购物车", "remove from cart", "remove from bag")):
-            return "remove_from_cart"
-        if any(term in folded for term in ("加入购物车", "加到购物车", "加购", "add to cart", "add to bag")):
-            return "add_to_cart"
-        if any(term in folded for term in ("查看购物车", "购物车里", "我的购物车", "view cart", "show cart", "my cart")):
-            return "view_cart"
+        if any(term in folded for term in (
+            "下单", "结算", "提交订单", "购物车", "加购",
+            "checkout", "place order", "cart", "bag",
+        )):
+            return "cart_handoff"
         if any(term in folded for term in ("对比", "比较", "哪个好", "哪件更", "compare", "which is better")):
             return "compare"
         if has_image and text:
@@ -224,37 +217,13 @@ class ShoppingAgentOrchestrator:
                 response.comparison = result["products"]
                 response.answer = "The comparison uses verified catalog fields." if language == "en" else "已按真实商品字段整理对比结果。"
 
-        elif intent in {"add_to_cart", "remove_from_cart"}:
-            product_ids = self._resolve_product_ids(session_id, message)
-            if not product_ids:
-                response.answer = "Please specify a product, for example: add item 1 to the cart." if language == "en" else "请说明要操作哪件商品，例如“把第1件加入购物车”。"
-            else:
-                tool = intent
-                result = self._invoke(
-                    traces,
-                    tool,
-                    {"session_id": session_id, "product_id": product_ids[0]},
-                )
-                response.cart = result["cart"]
-                response.answer = (
-                    ("Added to cart." if intent == "add_to_cart" else "Removed from cart.") if language == "en" else ("已加入购物车。" if intent == "add_to_cart" else "已从购物车移除。")
-                )
-
-        elif intent == "view_cart":
-            result = self._invoke(
-                traces, "view_cart", {"session_id": session_id}
-            )
-            response.cart = result["cart"]
+        elif intent == "cart_handoff":
             response.answer = (
-                (f"Your cart contains {len(response.cart)} item(s)." if language == "en" else f"购物车中共有 {len(response.cart)} 件商品。")
-                if response.cart
-                else ("Your cart is empty." if language == "en" else "购物车目前为空。")
+                "The shopping bag is managed by the Java account service. "
+                "Please use the product card or shopping bag."
+                if language == "en"
+                else "购物车由 Java 账户服务统一管理，请使用商品卡片或购物袋操作。"
             )
-
-        elif intent == "checkout":
-            result = self._invoke(traces, "checkout", {"session_id": session_id})
-            response.order = result["order"]
-            response.answer = ("Demo order created successfully. No payment was made." if language == "en" and result.get("success") else "Your cart is empty." if language == "en" else result["message"])
 
         self.memory.add_ai_message(session_id, response.answer)
         return response

@@ -1,6 +1,6 @@
-import { CheckCircle2, Minus, ShoppingBag, X } from "lucide-react";
+import { Minus, ShoppingBag, UserRound, X } from "lucide-react";
 import { productImage } from "../api/client";
-import type { Order, Product } from "../types";
+import type { CartItem, Product } from "../types";
 import { useTranslation } from "../i18n";
 
 function Shell({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
@@ -20,34 +20,33 @@ function Shell({ open, title, onClose, children }: { open: boolean; title: strin
   );
 }
 
-export function CartDrawer({ open, cart, order, onClose, onRemove, onCheckout }: { open: boolean; cart: Product[]; order: Order | null; onClose: () => void; onRemove: (id: string) => void; onCheckout: () => void }) {
+export function CartDrawer({ open, cart, authenticated, onClose, onRemove, onClear, onLogin }: { open: boolean; cart: CartItem[]; authenticated: boolean; onClose: () => void; onRemove: (id: string) => void; onClear: () => void; onLogin: () => void }) {
   const { t } = useTranslation();
   return (
     <Shell open={open} title={t("cart")} onClose={onClose}>
-      {order ? (
+      {!authenticated ? (
         <div className="grid h-full place-items-center text-center">
           <div>
-            <CheckCircle2 size={44} strokeWidth={1.2} className="mx-auto text-[#56705c]" />
-            <h3 className="mt-5 font-display text-3xl">{t("orderConfirmed")}</h3>
-            <p className="mt-2 text-sm text-muted">{order.order_id}</p>
-            <p className="mt-6 text-xs leading-5 text-muted">{t("demoOrder")}</p>
+            <UserRound size={36} strokeWidth={1.2} className="mx-auto text-muted" />
+            <p className="mt-4 text-sm text-muted">{t("loginForCart")}</p>
+            <button onClick={onLogin} className="mt-5 bg-ink px-5 py-3 text-xs uppercase tracking-[.18em] text-white">{t("login")}</button>
           </div>
         </div>
       ) : cart.length ? (
         <div className="flex h-full flex-col">
           <div className="flex-1 space-y-4">
-            {cart.map((product) => (
-              <div key={product.article_id} className="flex gap-4 border-b border-ink/10 pb-4">
-                <img src={productImage(product)} className="h-28 w-24 bg-canvas object-cover" alt={product.prod_name} />
+            {cart.map((item) => (
+              <div key={item.id} className="flex gap-4 border-b border-ink/10 pb-4">
+                <img src={item.productImageUrl || ""} className="h-28 w-24 bg-canvas object-cover" alt={item.productName} />
                 <div className="min-w-0 flex-1 py-1">
-                  <h3 className="text-sm font-medium">{product.prod_name}</h3>
-                  <p className="mt-1 text-xs text-muted">{product.product_type_name} · {product.colour_group_name}</p>
-                  <button onClick={() => onRemove(product.article_id)} className="mt-8 flex items-center gap-1 text-[11px] text-muted hover:text-accent"><Minus size={12} /> {t("remove")}</button>
+                  <h3 className="text-sm font-medium">{item.productName}</h3>
+                  <p className="mt-1 text-xs text-muted">{item.unitPrice.toFixed(2)} · × {item.quantity}</p>
+                  <button onClick={() => onRemove(item.id)} className="mt-8 flex items-center gap-1 text-[11px] text-muted hover:text-accent"><Minus size={12} /> {t("remove")}</button>
                 </div>
               </div>
             ))}
           </div>
-          <button onClick={onCheckout} className="mt-6 w-full bg-ink px-5 py-4 text-xs uppercase tracking-[0.2em] text-white hover:bg-accent">{t("checkout")}</button>
+          <button onClick={onClear} className="mt-6 w-full bg-ink px-5 py-4 text-xs uppercase tracking-[0.2em] text-white hover:bg-accent">{t("clearCart")}</button>
         </div>
       ) : (
         <div className="grid h-full place-items-center text-center text-muted">

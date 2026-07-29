@@ -1,20 +1,22 @@
 import { create } from "zustand";
-import type { Message, Order, Product, Slots, ToolTrace } from "../types";
+import type { CartItem, Message, Product, Slots, ToolTrace, User } from "../types";
 
 const sessionId =
   localStorage.getItem("atelier-session") || `web-${crypto.randomUUID()}`;
 localStorage.setItem("atelier-session", sessionId);
+const accessToken = localStorage.getItem("atelier-access-token") || "";
 
 type AppState = {
   sessionId: string;
+  accessToken: string;
+  user: User | null;
   messages: Message[];
   products: Product[];
   traces: ToolTrace[];
   slots: Slots;
-  cart: Product[];
+  cart: CartItem[];
   compareIds: string[];
   comparison: Product[];
-  order: Order | null;
   streaming: boolean;
   addMessage: (message: Message) => void;
   setMessages: (messages: Message[]) => void;
@@ -22,16 +24,18 @@ type AppState = {
   setProducts: (products: Product[]) => void;
   addTrace: (trace: ToolTrace) => void;
   setSlots: (slots: Slots) => void;
-  setCart: (cart: Product[]) => void;
+  setAuth: (accessToken: string, user: User | null) => void;
+  setCart: (cart: CartItem[]) => void;
   toggleCompare: (id: string) => void;
   setComparison: (products: Product[]) => void;
   clearCompare: () => void;
-  setOrder: (order: Order | null) => void;
   setStreaming: (streaming: boolean) => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
   sessionId,
+  accessToken,
+  user: null,
   messages: [],
   products: [],
   traces: [],
@@ -39,7 +43,6 @@ export const useAppStore = create<AppState>((set) => ({
   cart: [],
   compareIds: [],
   comparison: [],
-  order: null,
   streaming: false,
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   setMessages: (messages) => set({ messages }),
@@ -54,6 +57,15 @@ export const useAppStore = create<AppState>((set) => ({
   setProducts: (products) => set({ products }),
   addTrace: (trace) => set((state) => ({ traces: [...state.traces, trace].slice(-8) })),
   setSlots: (slots) => set({ slots }),
+  setAuth: (token, user) => {
+    if (token) localStorage.setItem("atelier-access-token", token);
+    else localStorage.removeItem("atelier-access-token");
+    set((state) => ({
+      accessToken: token,
+      user,
+      cart: token ? state.cart : []
+    }));
+  },
   setCart: (cart) => set({ cart }),
   toggleCompare: (id) =>
     set((state) => ({
@@ -65,6 +77,5 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   setComparison: (comparison) => set({ comparison }),
   clearCompare: () => set({ compareIds: [], comparison: [] }),
-  setOrder: (order) => set({ order }),
   setStreaming: (streaming) => set({ streaming })
 }));

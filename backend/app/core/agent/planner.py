@@ -11,10 +11,6 @@ TOOL_TO_INTENT = {
     "search_products_by_image": "image_search",
     "hybrid_search": "hybrid_search",
     "compare_products": "compare",
-    "add_to_cart": "add_to_cart",
-    "remove_from_cart": "remove_from_cart",
-    "view_cart": "view_cart",
-    "checkout": "checkout",
 }
 
 
