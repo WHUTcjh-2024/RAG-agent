@@ -2,18 +2,51 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from langchain_core.chat_history import InMemoryChatMessageHistory
 
+from app.core.agent.contracts import ErrorCode
+from app.core.agent.errors import AgentException
+
 
 DEFAULT_SESSION_DB = (
     Path(__file__).resolve().parents[3] / "data" / "sqlite" / "sessions.db"
 )
+DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+
+
+def validate_session_id(session_id: str) -> str:
+    candidate = session_id.strip()
+    if not SESSION_ID_PATTERN.fullmatch(candidate):
+        raise AgentException(
+            ErrorCode.INVALID_SESSION_ID,
+            "Session ID must be 1-100 characters using letters, numbers, '.', '_', ':' or '-'.",
+            status_code=HTTPStatus.BAD_REQUEST,
+            stage="validate_input",
+        )
+    return candidate
+
+
+def _read_session_ttl_seconds() -> int:
+    configured = os.getenv("SESSION_TTL_SECONDS", "").strip()
+    if not configured:
+        return DEFAULT_SESSION_TTL_SECONDS
+    try:
+        value = int(configured)
+    except ValueError as error:
+        raise RuntimeError("SESSION_TTL_SECONDS must be a positive integer.") from error
+    if value <= 0:
+        raise RuntimeError("SESSION_TTL_SECONDS must be a positive integer.")
+    return value
 
 
 @dataclass
@@ -21,6 +54,7 @@ class SessionState:
     history: InMemoryChatMessageHistory = field(default_factory=InMemoryChatMessageHistory)
     slots: dict[str, Any] = field(default_factory=dict)
     last_results: list[str] = field(default_factory=list)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentMemoryStore:
@@ -30,6 +64,7 @@ class AgentMemoryStore:
         configured = os.getenv("SESSION_DB_PATH", "").strip()
         self.sqlite_path = Path(sqlite_path or configured or DEFAULT_SESSION_DB).resolve()
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self.session_ttl_seconds = _read_session_ttl_seconds()
         self._sessions: dict[str, SessionState] = {}
         self._lock = RLock()
         with self._connect() as connection:
@@ -44,6 +79,7 @@ class AgentMemoryStore:
                 )
                 """
             )
+        self.cleanup_expired()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.sqlite_path, timeout=10)
@@ -69,9 +105,13 @@ class AgentMemoryStore:
                 state.history.add_ai_message(str(item.get("content", "")))
         state.slots = json.loads(row["slots_json"])
         state.last_results = json.loads(row["last_results_json"])
+        state.updated_at = datetime.strptime(
+            row["updated_at"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
         return state
 
     def _save(self, session_id: str, state: SessionState) -> None:
+        state.updated_at = datetime.now(timezone.utc)
         values = (
             session_id,
             json.dumps(self._serialize_history(state), ensure_ascii=False),
@@ -93,8 +133,37 @@ class AgentMemoryStore:
                 values,
             )
 
-    def get(self, session_id: str) -> SessionState:
+    def _is_expired(self, state: SessionState) -> bool:
+        age = datetime.now(timezone.utc) - state.updated_at
+        return age.total_seconds() >= self.session_ttl_seconds
+
+    def cleanup_expired(self) -> int:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.session_ttl_seconds)
+        cutoff_value = cutoff.strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
+            expired_cached = [
+                session_id
+                for session_id, state in self._sessions.items()
+                if self._is_expired(state)
+            ]
+            for session_id in expired_cached:
+                self._sessions.pop(session_id, None)
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM agent_sessions WHERE updated_at < ?", (cutoff_value,)
+                )
+            return max(cursor.rowcount, 0)
+
+    def get(self, session_id: str) -> SessionState:
+        session_id = validate_session_id(session_id)
+        with self._lock:
+            cached = self._sessions.get(session_id)
+            if cached is not None and self._is_expired(cached):
+                self._sessions.pop(session_id, None)
+                with self._connect() as connection:
+                    connection.execute(
+                        "DELETE FROM agent_sessions WHERE session_id = ?", (session_id,)
+                    )
             if session_id not in self._sessions:
                 with self._connect() as connection:
                     row = connection.execute(

@@ -1,4 +1,39 @@
-import type { AuthResult, CartItem, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+import type { AgentErrorPayload, AuthResult, CartItem, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+
+const REQUEST_ID_HEADER = "X-Request-Id";
+
+const STREAM_EVENT = {
+  META: "meta",
+  TOOL: "tool",
+  PRODUCTS: "products",
+  COMPARISON: "comparison",
+  MESSAGE: "message",
+  ERROR: "error"
+} as const;
+
+export class ApiClientError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly requestId?: string;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    options: {
+      status?: number;
+      code?: string;
+      requestId?: string;
+      retryable?: boolean;
+    } = {}
+  ) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = options.status || 0;
+    this.code = options.code;
+    this.requestId = options.requestId;
+    this.retryable = options.retryable || false;
+  }
+}
 
 export const productImage = (product: Product): string => {
   if (product.image_url) return product.image_url;
@@ -9,13 +44,25 @@ export const productImage = (product: Product): string => {
 async function ensureOk(response: Response): Promise<Response> {
   if (response.ok) return response;
   let detail = `请求失败 (${response.status})`;
+  let error: AgentErrorPayload | undefined;
   try {
-    const payload = await response.json();
-    detail = payload.detail || detail;
+    const payload = await response.json() as {
+      detail?: string | { message?: string };
+      error?: AgentErrorPayload;
+    };
+    error = payload.error;
+    if (typeof payload.detail === "string") detail = payload.detail;
+    else if (payload.detail?.message) detail = payload.detail.message;
+    else if (error?.message) detail = error.message;
   } catch {
     // Keep the HTTP fallback message.
   }
-  throw new Error(detail);
+  throw new ApiClientError(detail, {
+    status: response.status,
+    code: error?.code,
+    requestId: error?.request_id || response.headers.get(REQUEST_ID_HEADER) || undefined,
+    retryable: error?.retryable
+  });
 }
 
 export function buildProductQuery(query: ProductQuery = {}): string {
@@ -47,7 +94,7 @@ export async function fetchFacets(): Promise<ProductFacets> {
 }
 
 type StreamHandlers = {
-  onMeta: (payload: { session_id: string; intent: string; slots: Slots }) => void;
+  onMeta: (payload: { request_id?: string; session_id: string; intent: string; slots: Slots }) => void;
   onTool: (payload: ToolTrace) => void;
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
@@ -67,8 +114,13 @@ export async function streamChat(
   form.append("session_id", sessionId);
   form.append("language", language);
   if (image) form.append("file", image);
+  const requestId = crypto.randomUUID();
   const response = await ensureOk(
-    await fetch("/api/chat/stream", { method: "POST", body: form })
+    await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { [REQUEST_ID_HEADER]: requestId },
+      body: form
+    })
   );
   if (!response.body) throw new Error("浏览器不支持流式响应");
 
@@ -88,12 +140,33 @@ export async function streamChat(
         if (line.startsWith("data:")) data = line.slice(5).trim();
       }
       const payload = JSON.parse(data);
-      if (event === "meta") handlers.onMeta(payload);
-      if (event === "tool") handlers.onTool(payload);
-      if (event === "products") handlers.onProducts(payload.items);
-      if (event === "comparison") handlers.onComparison(payload.items);
-      if (event === "message") handlers.onMessage(payload.delta || "");
-      if (event === "error") handlers.onError(payload.message || "处理失败");
+      switch (event) {
+        case STREAM_EVENT.META:
+          handlers.onMeta(payload);
+          break;
+        case STREAM_EVENT.TOOL:
+          handlers.onTool(payload);
+          break;
+        case STREAM_EVENT.PRODUCTS:
+          handlers.onProducts(payload.items);
+          break;
+        case STREAM_EVENT.COMPARISON:
+          handlers.onComparison(payload.items);
+          break;
+        case STREAM_EVENT.MESSAGE:
+          handlers.onMessage(payload.delta || "");
+          break;
+        case STREAM_EVENT.ERROR:
+          handlers.onError(payload.message || "处理失败");
+          throw new ApiClientError(payload.message || "处理失败", {
+            code: payload.code,
+            requestId: payload.request_id || requestId,
+            retryable: payload.retryable
+          });
+        default:
+          // Forward compatibility: ignore events introduced by newer backends.
+          break;
+      }
     }
     if (done) break;
   }

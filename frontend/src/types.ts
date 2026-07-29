@@ -26,6 +26,15 @@ export interface ToolTrace {
   summary: string;
 }
 
+export interface AgentErrorPayload {
+  request_id: string;
+  code: string;
+  message: string;
+  retryable: boolean;
+  stage: string;
+  details: Record<string, unknown>;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant";

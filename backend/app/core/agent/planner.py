@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Callable
 
 from langchain_openai import ChatOpenAI
 
+from app.core.agent.contracts import ErrorCode, Intent
+from app.core.request_id import current_request_id
+
 
 TOOL_TO_INTENT = {
-    "search_products_by_text": "text_recommendation",
-    "search_products_by_image": "image_search",
-    "hybrid_search": "hybrid_search",
-    "compare_products": "compare",
+    "search_products_by_text": Intent.TEXT_RECOMMENDATION,
+    "search_products_by_image": Intent.IMAGE_SEARCH,
+    "hybrid_search": Intent.HYBRID_SEARCH,
+    "compare_products": Intent.COMPARE,
 }
+logger = logging.getLogger(__name__)
 
 
 class AgentPlanner:
@@ -39,9 +44,17 @@ class AgentPlanner:
             action_tools = [tool for tool in tools if tool.name in TOOL_TO_INTENT]
             self.bound = llm.bind_tools(action_tools, tool_choice="required")
 
-    def choose(self, message: str, has_image: bool, fallback: Callable[[], str]) -> str:
+    def choose(
+        self,
+        message: str,
+        has_image: bool,
+        fallback: Callable[[], Intent],
+    ) -> Intent:
+        fallback_intent = fallback()
+        if fallback_intent in {Intent.CART_HANDOFF, Intent.COMPARE}:
+            return fallback_intent
         if self.bound is None:
-            return fallback()
+            return fallback_intent
         try:
             response = self.bound.invoke(
                 [
@@ -56,11 +69,26 @@ class AgentPlanner:
             calls = getattr(response, "tool_calls", [])
             if calls and calls[0].get("name") in TOOL_TO_INTENT:
                 intent = TOOL_TO_INTENT[calls[0]["name"]]
-                if not has_image and intent in {"image_search", "hybrid_search"}:
-                    return fallback()
-                if has_image and not message.strip() and intent != "image_search":
-                    return fallback()
+                if not has_image and intent in {
+                    Intent.IMAGE_SEARCH,
+                    Intent.HYBRID_SEARCH,
+                }:
+                    return fallback_intent
+                if (
+                    has_image
+                    and fallback_intent in {
+                        Intent.IMAGE_SEARCH,
+                        Intent.HYBRID_SEARCH,
+                    }
+                    and intent != fallback_intent
+                ):
+                    return fallback_intent
                 return intent
-        except Exception:
-            pass
-        return fallback()
+        except Exception as error:
+            logger.warning(
+                "agent_model_fallback request_id=%s code=%s stage=plan_tools error_type=%s",
+                current_request_id(),
+                ErrorCode.MODEL_UNAVAILABLE.value,
+                type(error).__name__,
+            )
+        return fallback_intent

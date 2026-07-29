@@ -89,7 +89,7 @@ export default function App() {
         onProducts: store.setProducts,
         onComparison: store.setComparison,
         onMessage: store.appendAssistant,
-        onError: (text) => { throw new Error(text); }
+        onError: () => undefined
       });
     } catch (error) {
       const text = error instanceof Error ? error.message : t("requestFailed");

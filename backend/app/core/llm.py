@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -9,10 +10,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from app.core.agent.contracts import ErrorCode
 from app.core.agent.prompts import (
     GROUNDED_RECOMMENDATION_HUMAN,
     GROUNDED_RECOMMENDATION_SYSTEM,
 )
+from app.core.request_id import current_request_id
+
+logger = logging.getLogger(__name__)
 
 
 class ProductReason(BaseModel):
@@ -119,5 +124,11 @@ class GroundedRecommendationGenerator:
             if not reasons:
                 return self._fallback(products, language)
             return output.intro, reasons
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "agent_model_fallback request_id=%s code=%s stage=generate_answer error_type=%s",
+                current_request_id(),
+                ErrorCode.MODEL_UNAVAILABLE.value,
+                type(error).__name__,
+            )
             return self._fallback(products, language)
