@@ -79,6 +79,15 @@ class AgentMemoryStore:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_task_commits (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    committed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
         self.cleanup_expired()
 
     def _connect(self) -> sqlite3.Connection:
@@ -216,3 +225,59 @@ class AgentMemoryStore:
             }
             for message in messages
         ]
+
+    def commit_turn(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        user_content: str,
+        assistant_content: str,
+        slots: dict[str, Any],
+        last_results: list[str],
+    ) -> bool:
+        """Atomically commit one workflow turn once, even when a node is retried."""
+        session_id = validate_session_id(session_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            committed = connection.execute(
+                "SELECT 1 FROM agent_task_commits WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if committed is not None:
+                return False
+
+            row = connection.execute(
+                "SELECT * FROM agent_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            state = self._state_from_row(row)
+            state.history.add_user_message(user_content)
+            state.history.add_ai_message(assistant_content)
+            state.slots = dict(slots)
+            state.last_results = list(last_results)
+            connection.execute(
+                """
+                INSERT INTO agent_sessions
+                    (session_id, history_json, slots_json, last_results_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    history_json=excluded.history_json,
+                    slots_json=excluded.slots_json,
+                    last_results_json=excluded.last_results_json,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    session_id,
+                    json.dumps(self._serialize_history(state), ensure_ascii=False),
+                    json.dumps(state.slots, ensure_ascii=False),
+                    json.dumps(state.last_results, ensure_ascii=False),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO agent_task_commits (task_id, session_id) VALUES (?, ?)",
+                (task_id, session_id),
+            )
+            state.updated_at = datetime.now(timezone.utc)
+            self._sessions[session_id] = state
+            return True

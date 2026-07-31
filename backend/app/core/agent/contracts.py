@@ -16,6 +16,7 @@ class Intent(str, Enum):
 
 class SSEEvent(str, Enum):
     STATUS = "status"
+    NODE = "node"
     META = "meta"
     TOOL = "tool"
     PRODUCTS = "products"
@@ -44,15 +45,25 @@ class ToolTrace(BaseModel):
     summary: str = Field(min_length=1, max_length=500)
 
 
+class NodeTrace(BaseModel):
+    node: str = Field(min_length=1, max_length=100)
+    state: str = Field(pattern="^(completed|failed)$")
+    duration_ms: float = Field(ge=0)
+    summary: str = Field(min_length=1, max_length=500)
+
+
 class AgentResponse(BaseModel):
     request_id: str = Field(min_length=1, max_length=128)
     session_id: str = Field(min_length=1, max_length=100)
+    task_id: str | None = Field(default=None, min_length=1, max_length=100)
     intent: Intent
     answer: str
     products: list[dict[str, Any]] = Field(default_factory=list)
     comparison: list[dict[str, Any]] = Field(default_factory=list)
     slots: dict[str, Any] = Field(default_factory=dict)
     tool_trace: list[ToolTrace] = Field(default_factory=list)
+    node_trace: list[NodeTrace] = Field(default_factory=list)
+    recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
