@@ -42,7 +42,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-Id"],
+    expose_headers=["X-Request-Id", "X-Agent-Task-Id"],
 )
 app.add_middleware(RequestIdMiddleware)
 app.include_router(search_router, prefix="/api")
