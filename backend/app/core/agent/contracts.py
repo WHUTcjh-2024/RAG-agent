@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.core.agent.decision import DecisionCard
+
 
 class Intent(str, Enum):
     TEXT_RECOMMENDATION = "text_recommendation"
@@ -17,6 +19,8 @@ class Intent(str, Enum):
 class SSEEvent(str, Enum):
     STATUS = "status"
     NODE = "node"
+    EVIDENCE = "evidence"
+    DECISION = "decision"
     META = "meta"
     TOOL = "tool"
     PRODUCTS = "products"
@@ -36,6 +40,7 @@ class ErrorCode(str, Enum):
     TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
     UPSTREAM_UNAVAILABLE = "UPSTREAM_UNAVAILABLE"
+    BUSINESS_FACT_UNAVAILABLE = "BUSINESS_FACT_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -63,6 +68,7 @@ class AgentResponse(BaseModel):
     slots: dict[str, Any] = Field(default_factory=dict)
     tool_trace: list[ToolTrace] = Field(default_factory=list)
     node_trace: list[NodeTrace] = Field(default_factory=list)
+    decision: DecisionCard | None = None
     recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
