@@ -19,6 +19,8 @@ import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWeb
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cache.Cache;
+import org.springframework.cache.CacheManager;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -35,6 +37,9 @@ class OrderControllerIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private CacheManager cacheManager;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
@@ -47,6 +52,10 @@ class OrderControllerIntegrationTest {
         }
         jdbcTemplate.update("DELETE FROM cart_items");
         userRepository.deleteAll();
+        Cache orderLists = cacheManager.getCache("orderLists");
+        if (orderLists != null) {
+            orderLists.clear();
+        }
     }
 
     @Test
@@ -114,6 +123,40 @@ class OrderControllerIntegrationTest {
     }
 
     @Test
+    void creatingOrderEvictsTheCurrentUsersCachedOrderList() {
+        String email = "cache-create@example.com";
+        String token = registerAndToken(email);
+
+        webTestClient.get()
+            .uri("/api/orders")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.orders.length()").isEqualTo(0);
+
+        var userId = userRepository.findByEmailIgnoreCase(email).orElseThrow().getId();
+        Cache orderLists = cacheManager.getCache("orderLists");
+        assertThat(orderLists).isNotNull();
+        assertThat(orderLists.get(userId)).isNotNull();
+
+        addItem(token, "sku-cache", "Cache Coat", "/media/cache.png", "88.00", 1, true)
+            .expectStatus().isOk();
+        createOrder(token, "cache-create-001")
+            .expectStatus().isOk();
+
+        assertThat(orderLists.get(userId)).isNull();
+
+        webTestClient.get()
+            .uri("/api/orders")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.orders.length()").isEqualTo(1);
+    }
+
+    @Test
     void usersCanListViewAndCancelOnlyTheirOwnOrders() throws IOException {
         String ownerToken = registerAndToken("order-owner@example.com");
         String otherToken = registerAndToken("order-other@example.com");
@@ -159,6 +202,14 @@ class OrderControllerIntegrationTest {
             .expectStatus().isOk()
             .expectBody()
             .jsonPath("$.status").isEqualTo("CANCELLED");
+
+        webTestClient.get()
+            .uri("/api/orders")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + ownerToken)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.orders[0].status").isEqualTo("CANCELLED");
 
         webTestClient.post()
             .uri("/api/orders/{orderId}/cancel", orderId)
