@@ -54,13 +54,14 @@ export default function App() {
     if (store.accessToken) {
       Promise.all([
         fetchCurrentUser(store.accessToken),
-        fetchCart(store.accessToken),
-        fetchWardrobe(store.accessToken)
-      ]).then(([user, cart, wardrobe]) => {
+        fetchCart(store.accessToken)
+      ]).then(([user, cart]) => {
         store.setAuth(store.accessToken, user);
         store.setCart(cart);
-        store.setWardrobe(wardrobe);
       }).catch(() => store.setAuth("", null));
+      fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => {
+        // Wardrobe is additive; unavailable Java data must not invalidate login or cart state.
+      });
     }
   }, []);
 
