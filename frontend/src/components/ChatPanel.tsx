@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, ImagePlus, LoaderCircle, X } from "lucide-react";
+import { ArrowUp, ImagePlus, X } from "lucide-react";
 import type { Message } from "../types";
 import { useTranslation } from "../i18n";
 
@@ -7,9 +7,10 @@ type Props = {
   messages: Message[];
   streaming: boolean;
   onSubmit: (message: string, image: File | null, preview: string | null) => void;
+  onCancel?: () => void;
 };
 
-export function ChatPanel({ messages, streaming, onSubmit }: Props) {
+export function ChatPanel({ messages, streaming, onSubmit, onCancel }: Props) {
   const { t } = useTranslation();
   const prompts = [t("prompt1"), t("prompt2"), t("prompt3")];
   const [value, setValue] = useState("");
@@ -113,8 +114,8 @@ export function ChatPanel({ messages, streaming, onSubmit }: Props) {
             placeholder={t("chatPlaceholder")}
             className="max-h-28 min-h-11 flex-1 resize-none bg-transparent px-1 py-2 text-sm outline-none placeholder:text-muted/70"
           />
-          <button aria-label={t("send")} onClick={submit} disabled={streaming || (!value.trim() && !image)} className="grid h-10 w-10 shrink-0 place-items-center bg-accent text-white transition-colors hover:bg-accent-dark disabled:cursor-not-allowed disabled:bg-ink/15">
-            {streaming ? <LoaderCircle size={17} className="animate-spin" /> : <ArrowUp size={17} />}
+          <button aria-label={streaming ? "取消请求" : t("send")} onClick={streaming ? onCancel : submit} disabled={!streaming && (!value.trim() && !image)} className="grid h-10 w-10 shrink-0 place-items-center bg-accent text-white transition-colors hover:bg-accent-dark disabled:cursor-not-allowed disabled:bg-ink/15">
+            {streaming ? <X size={17} /> : <ArrowUp size={17} />}
           </button>
         </div>
       </div>

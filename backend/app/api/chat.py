@@ -51,6 +51,10 @@ class WardrobePlanEditRequest(BaseModel):
     operation: dict
 
 
+class TaskCancellationRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100)
+
+
 @lru_cache(maxsize=1)
 def get_memory() -> AgentMemoryStore:
     return AgentMemoryStore()
@@ -375,6 +379,32 @@ async def complete_action(
     completed = get_memory().complete_action(action_id, user_id, payload.cart_item_id)
     if not completed:
         raise invalid_input("Action is invalid, expired, or already completed.", status_code=409)
+    return {"ok": True}
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    payload: TaskCancellationRequest,
+    request: Request,
+) -> dict[str, bool]:
+    orchestrator = get_orchestrator()
+    if not workflow_enabled() or not isinstance(orchestrator, ShoppingAgentOrchestrator):
+        return {"ok": False}
+    cancelled = get_workflow(orchestrator).cancel(
+        task_id=task_id,
+        session_id=payload.session_id,
+        trusted_user_id=trusted_user_id_from(request),
+    )
+    return {"ok": cancelled}
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str) -> dict[str, bool]:
+    task_ids = get_memory().task_ids_for_session(session_id)
+    if task_ids and _workflow_instance is not None:
+        _workflow_instance.purge_tasks(task_ids)
+    get_memory().delete_session(session_id)
     return {"ok": True}
 
 
