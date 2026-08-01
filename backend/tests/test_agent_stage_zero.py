@@ -20,6 +20,7 @@ from app.core.agent.errors import AgentException
 from app.core.agent.memory import AgentMemoryStore
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.tool_registry import ToolRegistry
+from app.api.chat import trusted_user_id_from
 from app.main import app
 
 
@@ -143,6 +144,26 @@ def test_session_ttl_removes_expired_state(tmp_path: Path, monkeypatch) -> None:
 def test_intent_is_a_string_enum() -> None:
     assert Intent.TEXT_RECOMMENDATION == "text_recommendation"
     assert Intent.CART_HANDOFF.value == "cart_handoff"
+
+
+def test_trusted_context_requires_the_internal_gateway_token(monkeypatch) -> None:
+    from starlette.requests import Request
+
+    monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "internal-test-token")
+    spoofed = Request({
+        "type": "http",
+        "headers": [(b"x-trusted-user-id", b"spoofed-user")],
+    })
+    trusted = Request({
+        "type": "http",
+        "headers": [
+            (b"x-trusted-user-id", b"trusted-user"),
+            (b"x-agent-context-token", b"internal-test-token"),
+        ],
+    })
+
+    assert trusted_user_id_from(spoofed) is None
+    assert trusted_user_id_from(trusted) == "trusted-user"
 
 
 @pytest.mark.parametrize(

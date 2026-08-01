@@ -49,6 +49,9 @@ class ShoppingAgentWorkflowNodes:
         if node == "verify_constraints":
             return f"verified {len(updates.get('candidate_products', []))} candidates"
         if node == "build_evidence":
+            decision = updates.get("decision")
+            if decision:
+                return f"built decision card: {decision['verdict']}"
             return f"built {len(updates.get('evidence', []))} evidence records"
         if node == "generate_answer":
             return "generated grounded answer"
@@ -134,7 +137,10 @@ class ShoppingAgentWorkflowNodes:
         arguments: dict[str, Any] = {}
         missing_fields: list[str] = []
 
-        if intent == Intent.HYBRID_SEARCH:
+        if state.get("decision_product_id"):
+            tool = "search_products_by_text"
+            arguments = {"query": query, "filters": filters, "top_k": 5}
+        elif intent == Intent.HYBRID_SEARCH:
             tool = "hybrid_search"
             arguments = {
                 "query": query,
@@ -196,6 +202,18 @@ class ShoppingAgentWorkflowNodes:
             comparison = []
             products = result["results"]
             count = len(products)
+        decision_product_id = state.get("decision_product_id")
+        if decision_product_id:
+            decision_product = self.orchestrator._invoke(
+                traces,
+                "get_product_detail",
+                {"product_id": decision_product_id},
+            )
+            products = [decision_product] + [
+                product
+                for product in products
+                if str(product.get("article_id")) != decision_product_id
+            ]
         return {
             "candidate_products": products,
             "comparison": comparison,
@@ -264,9 +282,33 @@ class ShoppingAgentWorkflowNodes:
         context_refs["candidate_article_ids"] = [
             item["article_id"] for item in evidence
         ]
+        decision = None
+        if state.get("decision_product_id"):
+            product_id = state["decision_product_id"]
+            facts = None
+            if state.get("trusted_context"):
+                facts = self.orchestrator.decision_facts_provider.get(
+                    user_id=state["trusted_user_id"],
+                    product_id=product_id,
+                )
+            alternatives = [
+                product
+                for product in state.get("candidate_products", [])
+                if str(product.get("article_id")) != product_id
+            ]
+            card = self.orchestrator.decision_card_builder.build(
+                facts=facts,
+                alternatives=alternatives,
+            )
+            decision = card.model_dump(mode="json")
+            evidence = decision["evidence"]
+            context_refs["decision_product_id"] = product_id
+            if facts and facts.version:
+                context_refs["business_fact_version"] = facts.version
         return {
             "evidence": evidence,
             "context_refs": context_refs,
+            "decision": decision,
             "status": "evidence_ready",
         }
 
@@ -276,7 +318,14 @@ class ShoppingAgentWorkflowNodes:
         candidates = [dict(product) for product in state.get("candidate_products", [])]
         pending_action = None
 
-        if intent in {
+        if state.get("decision"):
+            decision = state["decision"]
+            answer = (
+                f"购买判断：{decision['verdict']}。"
+                if language == "zh"
+                else f"Purchase decision: {decision['verdict']}."
+            )
+        elif intent in {
             Intent.TEXT_RECOMMENDATION,
             Intent.IMAGE_SEARCH,
             Intent.HYBRID_SEARCH,
@@ -353,6 +402,7 @@ class ShoppingAgentWorkflowNodes:
             node_trace=[
                 NodeTrace.model_validate(trace) for trace in state.get("node_trace", [])
             ],
+            decision=state.get("decision"),
         ).to_dict()
         return {
             "response": response,

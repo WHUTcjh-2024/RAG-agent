@@ -26,6 +26,28 @@ export interface ToolTrace {
   summary: string;
 }
 
+export type DecisionVerdict = "RECOMMEND_BUY" | "BUY_WITH_CAUTION" | "NOT_RECOMMENDED" | "INSUFFICIENT_DATA";
+
+export interface DecisionEvidence {
+  source_type: "BODY_PROFILE" | "SKU_MEASUREMENT" | "PRICE" | "INVENTORY" | "RETURN_POLICY";
+  source_id: string;
+  field: string;
+  value: string;
+  observed_at: string;
+}
+
+export interface DecisionCard {
+  decision_id: string;
+  verdict: DecisionVerdict;
+  confidence: number;
+  recommended_size?: string | null;
+  fit_risks: { area: string; level: "LOW" | "MEDIUM" | "HIGH"; message: string; evidence_refs: string[] }[];
+  reasons: string[];
+  evidence: DecisionEvidence[];
+  missing_fields: string[];
+  alternatives: Product[];
+}
+
 export interface AgentErrorPayload {
   request_id: string;
   code: string;

@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AuthResult, CartItem, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -8,7 +8,8 @@ const STREAM_EVENT = {
   PRODUCTS: "products",
   COMPARISON: "comparison",
   MESSAGE: "message",
-  ERROR: "error"
+  ERROR: "error",
+  DECISION: "decision"
 } as const;
 
 export class ApiClientError extends Error {
@@ -98,6 +99,7 @@ type StreamHandlers = {
   onTool: (payload: ToolTrace) => void;
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
+  onDecision: (card: DecisionCard) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
 };
@@ -107,7 +109,8 @@ export async function streamChat(
   sessionId: string,
   image: File | null,
   language: "zh" | "en",
-  handlers: StreamHandlers
+  handlers: StreamHandlers,
+  accessToken = ""
 ): Promise<void> {
   const form = new FormData();
   form.append("message", message);
@@ -118,7 +121,7 @@ export async function streamChat(
   const response = await ensureOk(
     await fetch("/api/chat/stream", {
       method: "POST",
-      headers: { [REQUEST_ID_HEADER]: requestId },
+      headers: { [REQUEST_ID_HEADER]: requestId, ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       body: form
     })
   );
@@ -152,6 +155,9 @@ export async function streamChat(
           break;
         case STREAM_EVENT.COMPARISON:
           handlers.onComparison(payload.items);
+          break;
+        case STREAM_EVENT.DECISION:
+          handlers.onDecision(payload.card);
           break;
         case STREAM_EVENT.MESSAGE:
           handlers.onMessage(payload.delta || "");

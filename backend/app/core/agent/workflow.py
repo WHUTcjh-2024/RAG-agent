@@ -105,9 +105,18 @@ class RecoverableShoppingAgentWorkflow:
         session_id: str,
         language: str,
         has_image: bool,
+        decision_product_id: str | None,
+        trusted_user_id: str | None,
     ) -> str:
         raw = "\x1f".join(
-            (message.strip(), session_id, language, "image" if has_image else "text")
+            (
+                message.strip(),
+                session_id,
+                language,
+                "image" if has_image else "text",
+                decision_product_id or "",
+                trusted_user_id or "",
+            )
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -220,12 +229,15 @@ class RecoverableShoppingAgentWorkflow:
         image_path: str | None,
         language: str,
         request_id: str | None,
+        decision_product_id: str | None,
+        trusted_user_id: str | None,
     ) -> AgentState:
         return {
             "task_id": validate_task_id(task_id),
             "request_id": normalize_request_id(request_id),
             "session_id": validate_session_id(session_id),
-            "trusted_user_id": session_id,
+            "trusted_user_id": trusted_user_id or session_id,
+            "trusted_context": bool(trusted_user_id),
             "message": message.strip(),
             "image_path": image_path,
             "language": language,
@@ -234,6 +246,8 @@ class RecoverableShoppingAgentWorkflow:
                 session_id,
                 language,
                 bool(image_path),
+                decision_product_id,
+                trusted_user_id,
             ),
             "context_refs": {},
             "candidate_products": [],
@@ -253,6 +267,8 @@ class RecoverableShoppingAgentWorkflow:
             "node_trace": [],
             "answer": "",
             "status": "new",
+            "decision_product_id": decision_product_id,
+            "decision": None,
         }
 
     @staticmethod
@@ -303,6 +319,8 @@ class RecoverableShoppingAgentWorkflow:
         image_path: str | None = None,
         language: str = "zh",
         request_id: str | None = None,
+        decision_product_id: str | None = None,
+        trusted_user_id: str | None = None,
     ) -> AgentResponse:
         response: AgentResponse | None = None
         for item in self.stream(
@@ -312,6 +330,8 @@ class RecoverableShoppingAgentWorkflow:
             image_path=image_path,
             language=language,
             request_id=request_id,
+            decision_product_id=decision_product_id,
+            trusted_user_id=trusted_user_id,
         ):
             if item["type"] == "result":
                 response = AgentResponse.model_validate(item["response"])
@@ -328,6 +348,8 @@ class RecoverableShoppingAgentWorkflow:
         image_path: str | None = None,
         language: str = "zh",
         request_id: str | None = None,
+        decision_product_id: str | None = None,
+        trusted_user_id: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         task_id = validate_task_id(task_id)
         initial = self._initial_state(
@@ -337,6 +359,8 @@ class RecoverableShoppingAgentWorkflow:
             image_path=image_path,
             language=language,
             request_id=request_id,
+            decision_product_id=decision_product_id,
+            trusted_user_id=trusted_user_id,
         )
         config = self._config(task_id)
         with self._locks.hold(task_id):

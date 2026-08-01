@@ -4,6 +4,9 @@ services:
     environment:
       IMAGE_DEVICE: cpu
       SESSION_DB_PATH: /app/data/sqlite/sessions.db
+      AGENT_FACTS_BASE_URL: http://java-backend:8080
+      AGENT_FACTS_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
+      AGENT_CONTEXT_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
     volumes:
       - ./backend/data:/app/data
     ports:
@@ -16,6 +19,7 @@ services:
       SERVER_ADDRESS: 0.0.0.0
       RAG_UPSTREAM_BASE_URL: http://backend:18000
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-atelier-local-dev-secret-at-least-32-bytes}
+      AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
       SPRING_DATASOURCE_URL: jdbc:h2:file:/app/data/atelier-java;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
     volumes:
       - ./java-backend/data:/app/data

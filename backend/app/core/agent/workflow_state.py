@@ -14,6 +14,7 @@ class AgentState(TypedDict, total=False):
     request_id: str
     session_id: str
     trusted_user_id: str
+    trusted_context: bool
     message: str
     image_path: str | None
     language: str
@@ -41,6 +42,8 @@ class AgentState(TypedDict, total=False):
     answer: str
     status: str
     response: dict[str, Any]
+    decision_product_id: str | None
+    decision: dict[str, Any] | None
 
 
 def validate_task_id(task_id: str) -> str:

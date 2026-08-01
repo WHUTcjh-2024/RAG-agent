@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from app.core.agent.contracts import AgentResponse, Intent, ToolTrace
+from app.core.agent.decision import (
+    DecisionCardBuilder,
+    DecisionFactsProvider,
+    JavaDecisionFactsProvider,
+)
 from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.slot_extractor import SlotExtractor
@@ -25,6 +30,7 @@ class ShoppingAgentOrchestrator:
         hybrid_retriever,
         memory: AgentMemoryStore | None = None,
         reason_generator: GroundedRecommendationGenerator | None = None,
+        decision_facts_provider: DecisionFactsProvider | None = None,
     ) -> None:
         self.memory = memory or AgentMemoryStore()
         self.slot_extractor = SlotExtractor()
@@ -37,6 +43,8 @@ class ShoppingAgentOrchestrator:
         )
         self.registry: ToolRegistry = self.toolset.build_registry()
         self.planner = AgentPlanner(self.registry.tools)
+        self.decision_facts_provider = decision_facts_provider or JavaDecisionFactsProvider()
+        self.decision_card_builder = DecisionCardBuilder()
 
     @staticmethod
     def classify_intent(message: str, has_image: bool) -> Intent:

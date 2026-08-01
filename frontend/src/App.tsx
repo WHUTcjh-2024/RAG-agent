@@ -88,9 +88,10 @@ export default function App() {
         onTool: store.addTrace,
         onProducts: store.setProducts,
         onComparison: store.setComparison,
+        onDecision: store.setDecision,
         onMessage: store.appendAssistant,
         onError: () => undefined
-      });
+      }, store.accessToken);
     } catch (error) {
       const text = error instanceof Error ? error.message : t("requestFailed");
       store.appendAssistant(`${t("unable")}${text}`);
@@ -204,7 +205,7 @@ export default function App() {
       <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
       <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
       <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
-      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} onSubmit={submit} />
+      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} onSubmit={submit} />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import re
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -35,6 +36,7 @@ _workflow_guard = Lock()
 _workflow_instance: RecoverableShoppingAgentWorkflow | None = None
 _workflow_orchestrator: ShoppingAgentOrchestrator | None = None
 _workflow_path: str | None = None
+_CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
 
 
 @lru_cache(maxsize=1)
@@ -113,6 +115,24 @@ def remove_upload(path: str | None) -> None:
         Path(path).unlink(missing_ok=True)
 
 
+def decision_product_id_from(message: str, explicit_product_id: str) -> str | None:
+    if explicit_product_id.strip():
+        return explicit_product_id.strip()
+    if not any(term in message.casefold() for term in ("购买判断", "尺码", "合适", "值得买", "fit", "size")):
+        return None
+    match = re.search(r"(?<!\d)(\d{10})(?!\d)", message)
+    return match.group(1) if match else None
+
+
+def trusted_user_id_from(request: Request) -> str | None:
+    expected_token = os.getenv("AGENT_CONTEXT_TOKEN", "")
+    if not expected_token:
+        return None
+    if request.headers.get(_CONTEXT_TOKEN_HEADER) != expected_token:
+        return None
+    return request.headers.get("X-Trusted-User-Id")
+
+
 @router.post("/chat")
 async def chat(
     request: Request,
@@ -122,6 +142,7 @@ async def chat(
     task_id: str = Form(default="", max_length=100),
     language: str = Form(default="zh", pattern="^(zh|en)$"),
     file: UploadFile | None = File(default=None),
+    decision_product_id: str = Form(default="", max_length=128),
 ) -> dict:
     request_id = request.state.request_id
     actual_task_id = validate_task_id(task_id) if task_id.strip() else uuid4().hex
@@ -130,6 +151,7 @@ async def chat(
     )
     response.headers["X-Agent-Task-Id"] = actual_task_id
     image_path = await save_upload(file)
+    resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
     try:
         orchestrator = get_orchestrator()
         if workflow_enabled() and isinstance(
@@ -144,6 +166,8 @@ async def chat(
                 image_path=image_path,
                 language=language,
                 request_id=request_id,
+                decision_product_id=resolved_decision_product_id,
+                trusted_user_id=trusted_user_id_from(request),
             )
         else:
             result = await asyncio.to_thread(
@@ -187,6 +211,7 @@ async def chat_stream(
     task_id: str = Form(default="", max_length=100),
     language: str = Form(default="zh", pattern="^(zh|en)$"),
     file: UploadFile | None = File(default=None),
+    decision_product_id: str = Form(default="", max_length=128),
 ) -> StreamingResponse:
     request_id = request.state.request_id
     actual_task_id = validate_task_id(task_id) if task_id.strip() else uuid4().hex
@@ -194,6 +219,7 @@ async def chat_stream(
         validate_session_id(session_id) if session_id.strip() else uuid4().hex
     )
     image_path = await save_upload(file)
+    resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
 
     async def events():
         try:
@@ -224,6 +250,8 @@ async def chat_stream(
                                 image_path=image_path,
                                 language=language,
                                 request_id=request_id,
+                                decision_product_id=resolved_decision_product_id,
+                                trusted_user_id=trusted_user_id_from(request),
                             ):
                                 loop.call_soon_threadsafe(queue.put_nowait, item)
                         except Exception as error:
@@ -286,6 +314,10 @@ async def chat_stream(
                 yield sse(SSEEvent.PRODUCTS, {"items": response["products"]})
             if response["comparison"]:
                 yield sse(SSEEvent.COMPARISON, {"items": response["comparison"]})
+            if response.get("decision"):
+                for evidence in response["decision"]["evidence"]:
+                    yield sse(SSEEvent.EVIDENCE, {"item": evidence})
+                yield sse(SSEEvent.DECISION, {"card": response["decision"]})
             answer = response["answer"]
             for start in range(0, len(answer), 24):
                 yield sse(

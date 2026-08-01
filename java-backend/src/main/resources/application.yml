@@ -10,6 +10,9 @@ auth:
     secret: ${AUTH_JWT_SECRET:atelier-local-dev-secret-at-least-32-bytes}
     access-token-ttl: 2h
 
+agent:
+  internal-token: ${AGENT_INTERNAL_TOKEN:}
+
 spring:
   application:
     name: atelier-java-backend
