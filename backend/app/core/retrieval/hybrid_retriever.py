@@ -6,31 +6,12 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from app.core.retrieval.filters import product_matches_filters, structured_match_score
+from app.core.retrieval.filters import product_matches_filters
+from app.core.retrieval.fusion import ranked_ids, reciprocal_rank_fusion
 from app.core.retrieval.image_retriever import ImageRetriever
+from app.core.retrieval.query_expansion import expand_catalog_query
 from app.core.retrieval.text_retriever import TextRetriever
 from app.core.catalog_fields import enrich_commerce_fields
-
-
-TEXT_WEIGHT = 0.30
-IMAGE_WEIGHT = 0.45
-STRUCTURED_WEIGHT = 0.15
-POPULARITY_WEIGHT = 0.10
-
-
-def normalize_cosine(scores: np.ndarray) -> np.ndarray:
-    return np.clip((scores.astype(np.float32) + 1.0) / 2.0, 0.0, 1.0)
-
-
-def normalize_popularity(values: np.ndarray) -> np.ndarray:
-    values = np.maximum(values.astype(np.float32), 0.0)
-    if values.size == 0:
-        return values
-    if float(values.max()) <= 1.0:
-        return np.clip(values, 0.0, 1.0)
-    transformed = np.log1p(values)
-    maximum = float(transformed.max())
-    return transformed / maximum if maximum > 0 else np.zeros_like(transformed)
 
 
 class HybridRetriever:
@@ -55,15 +36,10 @@ class HybridRetriever:
         }
         common_ids = self.text_positions.keys() & self.image_positions.keys()
         if not common_ids:
-            raise RuntimeError("Text and image indexes have no common article_id values.")
+            raise RuntimeError(
+                "Text and image indexes have no common article_id values."
+            )
         self.common_ids = sorted(common_ids)
-
-    @staticmethod
-    def _parse_popularity(product: dict[str, Any]) -> float:
-        try:
-            return float(product.get("popularity_score") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
 
     def search(
         self,
@@ -91,7 +67,10 @@ class HybridRetriever:
         if total_candidates == 0:
             return [], 0
 
-        text_query = self.text_retriever.encoder.encode([query], batch_size=1)[0]
+        expanded_query = expand_catalog_query(query)
+        text_query = self.text_retriever.encoder.encode([expanded_query], batch_size=1)[
+            0
+        ]
         image_query = self.image_retriever.encoder.encode([image], batch_size=1)[0]
         text_indices = np.asarray(
             [self.text_positions[article_id] for article_id in candidate_ids],
@@ -102,67 +81,68 @@ class HybridRetriever:
             dtype=np.int64,
         )
         text_raw = np.asarray(self.text_retriever.embeddings[text_indices]) @ text_query
-        image_raw = np.asarray(self.image_retriever.embeddings[image_indices]) @ image_query
-        text_scores = normalize_cosine(text_raw)
-        image_scores = normalize_cosine(image_raw)
-
-        # Exact structured matches score above partial matches. With no structured
-        # request this component is zero instead of adding a constant to every item.
-        structured_scores = np.asarray(
+        image_raw = (
+            np.asarray(self.image_retriever.embeddings[image_indices]) @ image_query
+        )
+        bm25_scores = self.text_retriever.bm25.scores(expanded_query, text_indices)
+        rankings = {
+            "dense": ranked_ids(candidate_ids, text_raw),
+            "bm25": ranked_ids(candidate_ids, bm25_scores),
+            "image": ranked_ids(candidate_ids, image_raw),
+        }
+        rrf_scores, source_ranks = reciprocal_rank_fusion(rankings)
+        fused_ids = sorted(
+            rrf_scores, key=lambda item_id: (-rrf_scores[item_id], item_id)
+        )
+        rerank_ids = fused_ids[: min(len(fused_ids), max(top_k * 10, 50))]
+        candidate_positions = {
+            article_id: index for index, article_id in enumerate(candidate_ids)
+        }
+        reranker_scores = self.text_retriever.reranker.score(
+            expanded_query,
             [
-                structured_match_score(
-                    self.image_retriever.products[self.image_positions[article_id]],
-                    applied_filters,
-                )
-                for article_id in candidate_ids
-            ],
-            dtype=np.float32,
-        )
-        popularity_scores = normalize_popularity(
-            np.asarray(
-                [
-                    self._parse_popularity(
-                        self.image_retriever.products[self.image_positions[article_id]]
+                str(
+                    self.text_retriever.products[self.text_positions[article_id]].get(
+                        "text_profile"
                     )
-                    for article_id in candidate_ids
-                ],
-                dtype=np.float32,
-            )
+                    or ""
+                )
+                for article_id in rerank_ids
+            ],
         )
-        final_scores = (
-            TEXT_WEIGHT * text_scores
-            + IMAGE_WEIGHT * image_scores
-            + STRUCTURED_WEIGHT * structured_scores
-            + POPULARITY_WEIGHT * popularity_scores
-        )
-
-        result_count = min(top_k, total_candidates)
-        if result_count == total_candidates:
-            order = np.argsort(-final_scores)
-        else:
-            partition = np.argpartition(-final_scores, result_count - 1)[:result_count]
-            order = partition[np.argsort(-final_scores[partition])]
+        reranker_score_by_id = dict(zip(rerank_ids, map(float, reranker_scores)))
+        ordered_ids = sorted(
+            rerank_ids,
+            key=lambda item_id: (
+                -reranker_score_by_id[item_id],
+                -rrf_scores[item_id],
+                item_id,
+            ),
+        )[:top_k]
 
         results: list[dict[str, Any]] = []
-        for index in order[:result_count]:
-            article_id = candidate_ids[int(index)]
+        for article_id in ordered_ids:
+            index = candidate_positions[article_id]
             product = dict(
                 self.image_retriever.products[self.image_positions[article_id]]
             )
-            text_score = float(text_scores[index])
-            image_score = float(image_scores[index])
+            source_rank = source_ranks[article_id]
             product.update(
                 {
-                    "score": round(float(final_scores[index]), 6),
-                    "text_score": round(text_score, 6),
-                    "image_score": round(image_score, 6),
-                    "structured_score": round(float(structured_scores[index]), 6),
-                    "popularity_score": round(float(popularity_scores[index]), 6),
-                    "reason": (
-                        "图片相似度贡献更高"
-                        if image_score >= text_score
-                        else "文本语义匹配贡献更高"
-                    ),
+                    "score": round(rrf_scores[article_id], 8),
+                    "reason": "文本语义、BM25 与图片召回经 RRF 融合并重排",
+                    "retrieval": {
+                        "index_version": self.text_retriever.metadata.get("version", 1),
+                        "sources": sorted(source_rank),
+                        "source_ranks": source_rank,
+                        "dense_score": round(float(text_raw[index]), 6),
+                        "bm25_score": round(float(bm25_scores[index]), 6),
+                        "image_score": round(float(image_raw[index]), 6),
+                        "rrf_score": round(rrf_scores[article_id], 8),
+                        "reranker_score": round(reranker_score_by_id[article_id], 6),
+                        "reranker_backend": self.text_retriever.reranker.backend,
+                        "query_expansion": expanded_query,
+                    },
                 }
             )
             results.append(enrich_commerce_fields(product))

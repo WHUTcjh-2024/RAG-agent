@@ -28,6 +28,7 @@ class TextSearchRequest(BaseModel):
 class TextSearchResponse(BaseModel):
     query: str
     total_candidates: int
+    pipeline: list[str]
     results: list[dict[str, Any]]
 
 
@@ -41,20 +42,24 @@ class HybridSearchResponse(BaseModel):
     query: str
     query_image: str
     total_candidates: int
-    weights: dict[str, float]
+    pipeline: list[str]
     results: list[dict[str, Any]]
 
 
 @lru_cache(maxsize=1)
 def get_text_retriever() -> TextRetriever:
-    default_index = Path(__file__).resolve().parents[2] / "data" / "vector_store" / "text"
+    default_index = (
+        Path(__file__).resolve().parents[2] / "data" / "vector_store" / "text"
+    )
     index_dir = Path(os.getenv("TEXT_INDEX_DIR", str(default_index)))
     return TextRetriever(index_dir=index_dir)
 
 
 @lru_cache(maxsize=1)
 def get_image_retriever() -> ImageRetriever:
-    default_index = Path(__file__).resolve().parents[2] / "data" / "vector_store" / "image"
+    default_index = (
+        Path(__file__).resolve().parents[2] / "data" / "vector_store" / "image"
+    )
     index_dir = Path(os.getenv("IMAGE_INDEX_DIR", str(default_index)))
     device = os.getenv("IMAGE_DEVICE", "auto")
     return ImageRetriever(index_dir=index_dir, device=device)
@@ -87,6 +92,7 @@ def search_text(payload: TextSearchRequest) -> TextSearchResponse:
     return TextSearchResponse(
         query=payload.query,
         total_candidates=total_candidates,
+        pipeline=["dense", "bm25", "rrf", "rerank"],
         results=results,
     )
 
@@ -104,7 +110,9 @@ async def search_image(
         if not isinstance(parsed_filters, dict):
             raise ValueError("filters must be a JSON object")
     except (json.JSONDecodeError, ValueError) as error:
-        raise HTTPException(status_code=400, detail=f"Invalid filters JSON: {error}") from error
+        raise HTTPException(
+            status_code=400, detail=f"Invalid filters JSON: {error}"
+        ) from error
 
     content = await file.read(10 * 1024 * 1024 + 1)
     if len(content) > 10 * 1024 * 1024:
@@ -114,7 +122,9 @@ async def search_image(
             source.load()
             image = source.convert("RGB")
     except (OSError, UnidentifiedImageError) as error:
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.") from error
+        raise HTTPException(
+            status_code=400, detail="Uploaded file is not a valid image."
+        ) from error
 
     try:
         retriever = get_image_retriever()
@@ -146,7 +156,9 @@ async def search_hybrid(
         if not isinstance(parsed_filters, dict):
             raise ValueError("filters must be a JSON object")
     except (json.JSONDecodeError, ValueError) as error:
-        raise HTTPException(status_code=400, detail=f"Invalid filters JSON: {error}") from error
+        raise HTTPException(
+            status_code=400, detail=f"Invalid filters JSON: {error}"
+        ) from error
 
     content = await file.read(10 * 1024 * 1024 + 1)
     if len(content) > 10 * 1024 * 1024:
@@ -156,7 +168,9 @@ async def search_hybrid(
             source.load()
             image = source.convert("RGB")
     except (OSError, UnidentifiedImageError) as error:
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.") from error
+        raise HTTPException(
+            status_code=400, detail="Uploaded file is not a valid image."
+        ) from error
 
     try:
         retriever = get_hybrid_retriever()
@@ -172,11 +186,6 @@ async def search_hybrid(
         query=query,
         query_image=file.filename or "uploaded-image",
         total_candidates=total_candidates,
-        weights={
-            "text": 0.30,
-            "image": 0.45,
-            "structured": 0.15,
-            "popularity": 0.10,
-        },
+        pipeline=["dense", "bm25", "image", "rrf", "rerank"],
         results=results,
     )

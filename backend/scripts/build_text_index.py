@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import sys
@@ -17,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.text_encoder import DEFAULT_MODEL, create_text_encoder
+from app.core.retrieval.bm25 import BM25Index
 
 
 PROFILE_FIELDS = (
@@ -81,7 +83,9 @@ def read_products(path: Path) -> list[dict[str, str]]:
             article_id = (row.get("article_id") or "").strip()
             if not article_id or article_id in seen:
                 continue
-            row["article_id"] = article_id.zfill(10) if article_id.isdigit() else article_id
+            row["article_id"] = (
+                article_id.zfill(10) if article_id.isdigit() else article_id
+            )
             row["text_profile"] = build_text_profile(row)
             if not row["text_profile"]:
                 continue
@@ -92,10 +96,19 @@ def read_products(path: Path) -> list[dict[str, str]]:
     return products
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def write_index(
     index_dir: Path,
     products: list[dict[str, str]],
     embeddings: np.ndarray,
+    lexical_index: BM25Index,
     metadata: dict[str, object],
     force: bool,
 ) -> None:
@@ -110,10 +123,13 @@ def write_index(
         with (staging / "products.jsonl").open("w", encoding="utf-8") as handle:
             for product in products:
                 handle.write(json.dumps(product, ensure_ascii=False) + "\n")
+        (staging / "bm25.json").write_text(
+            json.dumps(lexical_index.to_payload(), ensure_ascii=False), encoding="utf-8"
+        )
         (staging / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        for name in ("embeddings.npy", "products.jsonl", "metadata.json"):
+        for name in ("embeddings.npy", "products.jsonl", "bm25.json", "metadata.json"):
             os.replace(staging / name, index_dir / name)
     finally:
         staging.rmdir()
@@ -141,17 +157,32 @@ def main() -> int:
     if embeddings.shape != (len(products), encoder.dimension):
         raise RuntimeError(f"Unexpected embedding shape: {embeddings.shape}")
 
+    lexical_index = BM25Index.from_documents(
+        product["text_profile"] for product in products
+    )
     metadata = {
-        "version": 1,
+        "version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "backend": args.backend,
-        "model": args.model if args.backend == "sentence-transformers" else "hashing-smoke-test",
+        "model": args.model
+        if args.backend == "sentence-transformers"
+        else "hashing-smoke-test",
         "dimension": encoder.dimension,
         "count": len(products),
         "input_csv": str(input_csv),
+        "input_sha256": file_sha256(input_csv),
+        "lexical_index": {"file": "bm25.json", "version": 1},
     }
     print(f"[4/4] Writing index: {index_dir}", flush=True)
-    write_index(index_dir, products, embeddings, metadata, force=args.force)
+    # Keep sparse and dense indexes built from the exact same product snapshot.
+    write_index(
+        index_dir,
+        products,
+        embeddings,
+        lexical_index,
+        metadata,
+        force=args.force,
+    )
     print(f"SUCCESS: indexed {len(products):,} products", flush=True)
     print(
         "NEXT: uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000",

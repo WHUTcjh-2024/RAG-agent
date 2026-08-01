@@ -90,6 +90,9 @@ def test_build_and_search_api(tmp_path: Path, monkeypatch) -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
     metadata = json.loads((index_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["count"] == 3
+    assert metadata["version"] == 2
+    assert metadata["lexical_index"] == {"file": "bm25.json", "version": 1}
+    assert (index_dir / "bm25.json").is_file()
 
     monkeypatch.setenv("TEXT_INDEX_DIR", str(index_dir))
     get_text_retriever.cache_clear()
@@ -105,6 +108,8 @@ def test_build_and_search_api(tmp_path: Path, monkeypatch) -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["total_candidates"] == 1
+    assert payload["pipeline"] == ["dense", "bm25", "rrf", "rerank"]
     assert payload["results"][0]["article_id"] == "0000000001"
+    assert payload["results"][0]["retrieval"]["sources"] == ["bm25", "dense"]
     assert payload["results"][0]["image_path"].endswith("0000000001.jpg")
     get_text_retriever.cache_clear()

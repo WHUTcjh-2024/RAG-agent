@@ -6,7 +6,11 @@ from typing import Any
 
 import numpy as np
 
+from app.core.retrieval.bm25 import BM25Index
+from app.core.retrieval.fusion import ranked_ids, reciprocal_rank_fusion
 from app.core.retrieval.filters import product_matches_filters
+from app.core.retrieval.reranker import ProductReranker
+from app.core.retrieval.query_expansion import expand_catalog_query
 from app.core.text_encoder import create_text_encoder
 from app.core.catalog_fields import enrich_commerce_fields
 
@@ -42,6 +46,19 @@ class TextRetriever:
             model_name=self.metadata.get("model", ""),
             dimension=expected_dimension,
         )
+        lexical_path = self.index_dir / "bm25.json"
+        if lexical_path.is_file():
+            self.bm25 = BM25Index.from_payload(
+                json.loads(lexical_path.read_text(encoding="utf-8"))
+            )
+        else:
+            # Existing local indexes remain readable; the next index build persists it.
+            self.bm25 = BM25Index.from_documents(
+                str(product.get("text_profile") or "") for product in self.products
+            )
+        if len(self.bm25.document_terms) != len(self.products):
+            raise RuntimeError("BM25 index and product metadata counts do not match.")
+        self.reranker = ProductReranker()
 
     def _candidate_indices(self, filters: dict[str, str | list[str]]) -> np.ndarray:
         if not filters:
@@ -70,21 +87,65 @@ class TextRetriever:
         if total_candidates == 0:
             return [], 0
 
-        query_vector = self.encoder.encode([query])[0]
-        candidate_vectors = np.asarray(self.embeddings[candidate_indices])
-        scores = candidate_vectors @ query_vector
-        result_count = min(top_k, total_candidates)
-        if result_count == total_candidates:
-            local_order = np.argsort(-scores)
-        else:
-            partition = np.argpartition(-scores, result_count - 1)[:result_count]
-            local_order = partition[np.argsort(-scores[partition])]
-
+        expanded_query = expand_catalog_query(query)
+        query_vector = self.encoder.encode([expanded_query])[0]
+        dense_scores = np.asarray(self.embeddings[candidate_indices]) @ query_vector
+        bm25_scores = self.bm25.scores(expanded_query, candidate_indices)
+        candidate_ids = [
+            str(self.products[int(index)]["article_id"]) for index in candidate_indices
+        ]
+        rankings = {
+            "dense": ranked_ids(candidate_ids, dense_scores),
+            "bm25": ranked_ids(candidate_ids, bm25_scores),
+        }
+        rrf_scores, source_ranks = reciprocal_rank_fusion(rankings)
+        fused_ids = sorted(
+            rrf_scores, key=lambda item_id: (-rrf_scores[item_id], item_id)
+        )
+        rerank_ids = fused_ids[: min(len(fused_ids), max(top_k * 10, 50))]
+        positions = {item_id: offset for offset, item_id in enumerate(candidate_ids)}
+        reranker_scores = self.reranker.score(
+            expanded_query,
+            [
+                str(
+                    self.products[int(candidate_indices[positions[item_id]])].get(
+                        "text_profile"
+                    )
+                    or ""
+                )
+                for item_id in rerank_ids
+            ],
+        )
+        rerank_score_by_id = dict(zip(rerank_ids, map(float, reranker_scores)))
+        ordered_ids = sorted(
+            rerank_ids,
+            key=lambda item_id: (
+                -rerank_score_by_id[item_id],
+                -rrf_scores[item_id],
+                item_id,
+            ),
+        )[:top_k]
         results: list[dict[str, Any]] = []
-        for local_index in local_order[:result_count]:
-            product_index = int(candidate_indices[local_index])
-            product = dict(self.products[product_index])
-            product["score"] = round(float(scores[local_index]), 6)
-            product["reason"] = "文本语义相似度与结构化筛选匹配"
+        for article_id in ordered_ids:
+            local_index = positions[article_id]
+            product = dict(self.products[int(candidate_indices[local_index])])
+            source_rank = source_ranks[article_id]
+            product.update(
+                {
+                    "score": round(rrf_scores[article_id], 8),
+                    "reason": "BM25 与语义召回经 RRF 融合并重排",
+                    "retrieval": {
+                        "index_version": self.metadata.get("version", 1),
+                        "sources": sorted(source_rank),
+                        "source_ranks": source_rank,
+                        "dense_score": round(float(dense_scores[local_index]), 6),
+                        "bm25_score": round(float(bm25_scores[local_index]), 6),
+                        "rrf_score": round(rrf_scores[article_id], 8),
+                        "reranker_score": round(rerank_score_by_id[article_id], 6),
+                        "reranker_backend": self.reranker.backend,
+                        "query_expansion": expanded_query,
+                    },
+                }
+            )
             results.append(enrich_commerce_fields(product))
         return results, total_candidates

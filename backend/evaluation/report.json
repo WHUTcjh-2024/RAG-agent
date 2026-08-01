@@ -1,15 +1,17 @@
 {
-  "evaluated_at": "2026-06-29T13:12:01.511532+00:00",
-  "case_count": 62,
+  "evaluated_at": "2026-08-01T13:22:08.928499+00:00",
+  "case_count": 32,
   "retrieval": {
-    "cases": 40,
-    "recall_at_1": 1.0,
-    "recall_at_5": 1.0,
-    "recall_at_10": 1.0,
-    "mrr_at_10": 1.0,
+    "evaluation_source": "labeled_retrieval",
+    "cases": 10,
+    "recall_at_1": 0.5,
+    "recall_at_5": 0.9,
+    "recall_at_10": 0.9,
+    "mrr_at_10": 0.65,
+    "ndcg_at_10": 0.7123212623289701,
     "missing_article_ids": [],
-    "latency_ms_p50": 40.65899999841349,
-    "latency_ms_p95": 44.16040000069188
+    "latency_ms_p50": 73.45220000570407,
+    "latency_ms_p95": 82.19299999473151
   },
   "intent_accuracy": 1.0,
   "slot_accuracy": 1.0
