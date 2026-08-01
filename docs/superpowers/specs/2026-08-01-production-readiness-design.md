@@ -14,7 +14,7 @@
 - `local` 保留现有 H2 配置；`prod` 使用 PostgreSQL。
 - 使用环境变量配置数据库、Redis、RAG 上游地址和 JWT 密钥。
 - 新增 Redis 连接配置与一个可验证的缓存能力。
-- 新增根目录 `docker-compose.yml`，启动 Java 服务、PostgreSQL 和 Redis。
+- 在现有根目录 `docker-compose.yml` 中保留 `backend` 与 `frontend` 服务定义不变，仅为 Java 服务补充 PostgreSQL、Redis 和生产配置。
 - 通过 Actuator 暴露 `health`、`info`、`prometheus` 指标端点。
 - 新增 Compose 启动验证及配置加载测试。
 - 更新中文部署文档与 `.env.example`，不提交真实密码。
@@ -24,7 +24,7 @@
 - Kafka、RabbitMQ、分布式事务或异步下单。
 - 真实支付对接。
 - 数据库读写分离、分库分表或多节点 Redis。
-- 将 Python RAG 服务改造成容器服务。Python 服务仍由现有方式运行，Java 通过 `RAG_UPSTREAM_BASE_URL` 访问它。
+- 修改 Python RAG 代码、依赖、接口或现有 `backend` Compose 服务定义。Java 继续通过 `RAG_UPSTREAM_BASE_URL` 访问现有 Python 服务。
 - 将订单写操作放入缓存。订单、购物车和用户数据仍以 PostgreSQL 为唯一事实来源。
 
 ## 运行架构
@@ -35,12 +35,12 @@
        v
 Java Gateway (8080, Spring Boot)
   |            |              |
-  |            |              +-- HTTP --> Python RAG（虚拟机宿主机或可访问地址）
+  |            |              +-- HTTP --> Python RAG（现有 Compose 的 backend 服务）
   |            +-- Redis（缓存与后续限流基础）
   +-- PostgreSQL（用户、购物车、订单）
 ```
 
-Docker Compose 管理 Java、PostgreSQL 与 Redis。PostgreSQL 和 Redis 仅暴露给 Compose 内部网络；Java 的 8080 端口映射至虚拟机，以便前端和运维检查访问。
+现有 Docker Compose 继续管理 Python RAG、Java 和前端；本期仅新增 PostgreSQL 与 Redis 并调整 Java 服务环境变量。PostgreSQL 和 Redis 仅暴露给 Compose 内部网络；Java 的 8080 端口映射至虚拟机，以便前端和运维检查访问。
 
 ## 配置设计
 
@@ -55,7 +55,7 @@ Docker Compose 管理 Java、PostgreSQL 与 Redis。PostgreSQL 和 Redis 仅暴�
 - `SPRING_DATASOURCE_URL`、`SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD` 指向 PostgreSQL。
 - `SPRING_DATA_REDIS_HOST`、`SPRING_DATA_REDIS_PORT`、`SPRING_DATA_REDIS_PASSWORD` 指向 Redis。
 - `AUTH_JWT_SECRET`、数据库密码和 Redis 密码必须由虚拟机 `.env` 或部署系统注入，禁止写入 Git。
-- `RAG_UPSTREAM_BASE_URL` 由环境变量指定。若 Python 仍运行在虚拟机宿主机，需要使用 Docker 容器可访问的地址，不使用容器内部的 `127.0.0.1`。
+- Compose 中的 `RAG_UPSTREAM_BASE_URL` 继续使用 `http://backend:18000`。本期不改动 Python 服务本身。
 - PostgreSQL 使用 Flyway 执行已有迁移，`ddl-auto` 继续为 `validate`，不允许生产环境由 Hibernate 自动改表。
 
 ## Redis 使用边界
@@ -84,7 +84,7 @@ Docker Compose 管理 Java、PostgreSQL 与 Redis。PostgreSQL 和 Redis 仅暴�
 
 1. `mvn test`：验证现有业务和新增缓存失效逻辑，使用 H2。
 2. `docker compose config`：验证 Compose 与环境变量文件语法。
-3. 在 Ubuntu 虚拟机执行 `docker compose up -d --build`。
+3. 在 Ubuntu 虚拟机执行 `docker compose up -d --build`，确认现有 Python RAG、Java、前端服务以及新增 PostgreSQL、Redis 均可启动。
 4. 使用虚拟机 IP 地址访问 `http://虚拟机IP:8080/actuator/health`，确认返回健康状态。
 5. 使用登录、购物车、创建订单、查询订单流程验证 PostgreSQL 数据落库；重复查询验证 Redis 缓存可用；停止 Redis 后验证订单查询仍可回退数据库。
 
