@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,6 +24,8 @@ import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -39,6 +42,12 @@ class OrderControllerIntegrationTest {
 
     @Autowired
     private CacheManager cacheManager;
+
+    @Autowired
+    private OrderListCache orderListCache;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -154,6 +163,21 @@ class OrderControllerIntegrationTest {
             .expectStatus().isOk()
             .expectBody()
             .jsonPath("$.orders.length()").isEqualTo(1);
+    }
+
+    @Test
+    void evictsOrderListCacheOnlyAfterTransactionCommit() {
+        UUID userId = UUID.randomUUID();
+        Cache orderLists = cacheManager.getCache("orderLists");
+        assertThat(orderLists).isNotNull();
+        orderListCache.put(userId, new OrderResponses.OrderListView(List.of()));
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            orderListCache.evictAfterCommit(userId);
+            assertThat(orderLists.get(userId)).isNotNull();
+        });
+
+        assertThat(orderLists.get(userId)).isNull();
     }
 
     @Test

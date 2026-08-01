@@ -7,6 +7,8 @@ import java.util.UUID;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class OrderListCache {
@@ -41,6 +43,20 @@ public class OrderListCache {
         } catch (RuntimeException ignored) {
             // A cache outage must not prevent order writes from committing.
         }
+    }
+
+    public void evictAfterCommit(UUID userId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+            || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            evict(userId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                evict(userId);
+            }
+        });
     }
 
     private Cache cache() {

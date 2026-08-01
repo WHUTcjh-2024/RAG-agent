@@ -75,7 +75,7 @@ public class OrderService {
         Order order = orderForUser(orderId, userId);
         order.cancel();
         OrderDetailView detail = detailView(orderRepository.save(order));
-        orderListCache.evict(userId);
+        orderListCache.evictAfterCommit(userId);
         return detail;
     }
 
@@ -94,7 +94,7 @@ public class OrderService {
             .toList();
         orderItemRepository.saveAll(orderItems);
         cartItemRepository.deleteAll(selectedItems);
-        orderListCache.evict(userId);
+        orderListCache.evictAfterCommit(userId);
         return OrderDetailView.from(order, orderItems);
     }
 
