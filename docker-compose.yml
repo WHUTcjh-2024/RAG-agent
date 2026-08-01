@@ -11,23 +11,67 @@ services:
       - ./backend/data:/app/data
     ports:
       - "18000:18000"
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?请设置 POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?请设置 POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请设置 POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?请设置 REDIS_PASSWORD}
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
   java-backend:
     build: ./java-backend
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
+      SPRING_PROFILES_ACTIVE: prod
       SERVER_ADDRESS: 0.0.0.0
       RAG_UPSTREAM_BASE_URL: http://backend:18000
-      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-atelier-local-dev-secret-at-least-32-bytes}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?请设置 AUTH_JWT_SECRET}
       AGENT_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
-      SPRING_DATASOURCE_URL: jdbc:h2:file:/app/data/atelier-java;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
-    volumes:
-      - ./java-backend/data:/app/data
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
   frontend:
     build: ./frontend
     depends_on:
-      - java-backend
+      java-backend:
+        condition: service_healthy
     ports:
       - "5173:80"
+
+volumes:
+  postgres-data:
