@@ -58,6 +58,31 @@ GET http://127.0.0.1:8080/api/auth/me
 Authorization: Bearer <token>
 ```
 
+## 订单接口
+
+```text
+POST /api/orders
+GET  /api/orders
+GET  /api/orders/{orderId}
+POST /api/orders/{orderId}/cancel
+```
+
+订单接口均要求：
+
+```text
+Authorization: Bearer <token>
+```
+
+创建订单时还必须携带 `Idempotency-Key` 请求头。客户端重试或重复点击时应复用同一个键，服务会返回同一笔订单，避免重复创建：
+
+```text
+POST /api/orders
+Authorization: Bearer <token>
+Idempotency-Key: checkout-20260801-001
+```
+
+订单从当前用户已选中的购物车项创建，初始状态为 `PENDING_PAYMENT`。创建成功后会删除本次结算的购物车项，未选中的商品保留在购物车中。
+
 第一阶段只支持本地邮箱密码账号。微信、支付宝、GitHub 登录暂不接入，只在数据模型中预留扩展字段。
 
 ## 购物车接口
