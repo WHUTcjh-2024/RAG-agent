@@ -24,3 +24,8 @@ spring:
         format_sql: true
   cache:
     type: simple
+
+management:
+  health:
+    redis:
+      enabled: false
