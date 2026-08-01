@@ -218,7 +218,11 @@ class RecoverableShoppingAgentWorkflow:
 
     @staticmethod
     def route_after_answer(state: AgentState) -> str:
-        return "wait_for_confirmation" if state.get("pending_action") else "complete"
+        return (
+            "wait_for_confirmation"
+            if state.get("pending_action") or state.get("intent") == "cart_handoff"
+            else "complete"
+        )
 
     def _initial_state(
         self,

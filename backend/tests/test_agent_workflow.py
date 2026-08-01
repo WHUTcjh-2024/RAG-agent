@@ -129,12 +129,36 @@ def test_cart_route_runs_confirmation_node_without_python_cart_tool(
 
     assert "wait_for_confirmation" in state["executed_nodes"]
     assert response.intent == "cart_handoff"
-    assert "Java" in response.answer
+    assert "登录" in response.answer
     assert response.tool_trace == []
     assert workflow.route_after_answer({"pending_action": {"type": "handoff"}}) == (
         "wait_for_confirmation"
     )
     assert workflow.route_after_answer({"pending_action": None}) == "complete"
+
+
+def test_authenticated_cart_route_returns_confirmation_without_writing_cart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_ACTION_SECRET", "workflow-action-secret")
+    workflow, orchestrator = create_workflow(tmp_path)
+    orchestrator.memory.set_last_results("cart-session", ["0000000001"])
+    try:
+        response = workflow.invoke(
+            task_id="authenticated-cart-route",
+            message="把第1件加入购物车",
+            session_id="cart-session",
+            request_id="cart-request",
+            trusted_user_id="trusted-user",
+        )
+    finally:
+        workflow.close()
+
+    assert response.pending_action is not None
+    assert response.pending_action["action_type"] == "ADD_CART_ITEM"
+    assert response.pending_action["product"]["article_id"] == "0000000001"
+    assert response.pending_action["confirmation_token"].count(".") == 1
+    assert response.tool_trace[0].tool == "get_product_detail"
 
 
 def test_transient_retrieval_error_retries_only_failed_node(tmp_path: Path) -> None:

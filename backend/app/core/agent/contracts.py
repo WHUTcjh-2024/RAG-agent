@@ -21,6 +21,7 @@ class SSEEvent(str, Enum):
     NODE = "node"
     EVIDENCE = "evidence"
     DECISION = "decision"
+    CONFIRM_REQUIRED = "confirm_required"
     META = "meta"
     TOOL = "tool"
     PRODUCTS = "products"
@@ -69,6 +70,7 @@ class AgentResponse(BaseModel):
     tool_trace: list[ToolTrace] = Field(default_factory=list)
     node_trace: list[NodeTrace] = Field(default_factory=list)
     decision: DecisionCard | None = None
+    pending_action: dict[str, Any] | None = None
     recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:

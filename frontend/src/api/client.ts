@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -9,7 +9,8 @@ const STREAM_EVENT = {
   COMPARISON: "comparison",
   MESSAGE: "message",
   ERROR: "error",
-  DECISION: "decision"
+  DECISION: "decision",
+  CONFIRM_REQUIRED: "confirm_required"
 } as const;
 
 export class ApiClientError extends Error {
@@ -100,6 +101,7 @@ type StreamHandlers = {
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
   onDecision: (card: DecisionCard) => void;
+  onConfirmRequired: (action: PendingCartAction) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
 };
@@ -158,6 +160,9 @@ export async function streamChat(
           break;
         case STREAM_EVENT.DECISION:
           handlers.onDecision(payload.card);
+          break;
+        case STREAM_EVENT.CONFIRM_REQUIRED:
+          handlers.onConfirmRequired(payload);
           break;
         case STREAM_EVENT.MESSAGE:
           handlers.onMessage(payload.delta || "");
@@ -237,6 +242,23 @@ export async function addCart(token: string, product: Product): Promise<CartItem
     })
   }));
   return response.json();
+}
+
+export async function confirmAgentCartAction(token: string, action: PendingCartAction): Promise<CartItem> {
+  const response = await ensureOk(await fetch("/api/cart/agent-actions/confirm", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmationToken: action.confirmation_token })
+  }));
+  return response.json();
+}
+
+export async function recordAgentActionCompletion(token: string, actionId: string, cartItemId: string): Promise<void> {
+  await ensureOk(await fetch(`/api/actions/${encodeURIComponent(actionId)}/completed`, {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ cart_item_id: cartItemId })
+  }));
 }
 
 export async function removeCart(token: string, itemId: string): Promise<void> {

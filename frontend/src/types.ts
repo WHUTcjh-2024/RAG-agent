@@ -88,6 +88,15 @@ export interface CartItem {
   updatedAt: string;
 }
 
+export interface PendingCartAction {
+  action_id: string;
+  action_type: "ADD_CART_ITEM";
+  summary: string;
+  expires_at: string;
+  confirmation_token: string;
+  product: Pick<Product, "article_id" | "prod_name" | "price" | "image_url">;
+}
+
 export type Slots = Record<string, string | number | string[]>;
 
 export interface ProductPage {
