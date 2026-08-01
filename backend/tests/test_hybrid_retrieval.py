@@ -73,23 +73,12 @@ def test_hybrid_api_fuses_text_image_and_filters(tmp_path: Path, monkeypatch) ->
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["total_candidates"] == 2
-    assert payload["weights"] == {
-        "text": 0.30,
-        "image": 0.45,
-        "structured": 0.15,
-        "popularity": 0.10,
-    }
+    assert payload["pipeline"] == ["dense", "bm25", "image", "rrf", "rerank"]
     top = payload["results"][0]
     assert top["article_id"] == "0000000001"
-    assert top["structured_score"] == 1.0
-    expected = (
-        0.30 * top["text_score"]
-        + 0.45 * top["image_score"]
-        + 0.15 * top["structured_score"]
-        + 0.10 * top["popularity_score"]
-    )
-    assert top["score"] == pytest.approx(expected, abs=2e-6)
-    assert top["score"] > payload["results"][1]["score"]
+    assert set(top["retrieval"]["sources"]) == {"bm25", "dense", "image"}
+    assert top["retrieval"]["source_ranks"]
+    assert top["score"] == pytest.approx(top["retrieval"]["rrf_score"])
     get_hybrid_retriever.cache_clear()
 
 
