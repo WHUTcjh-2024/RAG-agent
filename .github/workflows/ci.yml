@@ -15,7 +15,8 @@ jobs:
           cache: pip
       - run: pip install -r backend/requirements.txt
       - run: python -m pytest backend/tests -q
-      - run: python backend/scripts/evaluate_recommendations.py --report /tmp/agent-evaluation.json
+      - run: python backend/scripts/build_text_index.py --backend hashing --index_dir /tmp/agent-evaluation-index
+      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_ndcg_at_10 0.64
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
