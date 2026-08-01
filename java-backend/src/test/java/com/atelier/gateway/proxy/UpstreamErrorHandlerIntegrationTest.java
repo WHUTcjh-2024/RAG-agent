@@ -11,7 +11,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = "rag.upstream-base-url=http://127.0.0.1:1"
 )
-@AutoConfigureWebTestClient
+@AutoConfigureWebTestClient(timeout = "10s")
 class UpstreamErrorHandlerIntegrationTest {
     @Autowired
     private WebTestClient webTestClient;
