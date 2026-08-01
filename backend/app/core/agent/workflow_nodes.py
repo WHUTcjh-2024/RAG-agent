@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.agent.contracts import AgentResponse, Intent, NodeTrace, ToolTrace
+from app.core.agent.actions import create_cart_confirmation
 from app.core.agent.errors import invalid_input
 from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
@@ -69,7 +70,8 @@ class ShoppingAgentWorkflowNodes:
             raise invalid_input("Message or image is required.")
         return {
             "session_id": session_id,
-            "trusted_user_id": session_id,
+            "trusted_user_id": state.get("trusted_user_id") or session_id,
+            "trusted_context": bool(state.get("trusted_context")),
             "task_id": task_id,
             "request_id": normalize_request_id(state.get("request_id")),
             "message": message,
@@ -168,6 +170,13 @@ class ShoppingAgentWorkflowNodes:
                 arguments = {"product_ids": product_ids[:3]}
             else:
                 missing_fields = ["comparison_product_ids"]
+        elif intent == Intent.CART_HANDOFF:
+            product_ids = self.orchestrator._resolve_product_ids(state["session_id"], message)
+            if len(product_ids) == 1:
+                tool = "get_product_detail"
+                arguments = {"product_id": product_ids[0]}
+            else:
+                missing_fields = ["cart_product_id"]
 
         return {
             "intent": intent.value,
@@ -198,6 +207,10 @@ class ShoppingAgentWorkflowNodes:
             comparison = result["products"]
             products: list[dict[str, Any]] = []
             count = len(comparison)
+        elif tool == "get_product_detail":
+            comparison = []
+            products = [result]
+            count = 1
         else:
             comparison = []
             products = result["results"]
@@ -350,13 +363,21 @@ class ShoppingAgentWorkflowNodes:
                     else "已按真实商品字段整理对比结果。"
                 )
         else:
-            answer = (
-                "The shopping bag is managed by the Java account service. "
-                "Please use the product card or shopping bag."
-                if language == "en"
-                else "购物车由 Java 账户服务统一管理，请使用商品卡片或购物袋操作。"
-            )
-            pending_action = {"type": "java_cart_handoff"}
+            if not state.get("trusted_context"):
+                answer = "Please sign in before adding an item to your shopping bag." if language == "en" else "请先登录，再确认加入购物车。"
+            elif not candidates:
+                answer = "Please specify exactly one product to add." if language == "en" else "请明确要加入购物车的一件商品。"
+            else:
+                pending_action = create_cart_confirmation(
+                    task_id=state["task_id"],
+                    user_id=state["trusted_user_id"],
+                    product=candidates[0],
+                    language=language,
+                )
+                self.orchestrator.memory.save_pending_action(
+                    pending_action, state["trusted_user_id"], state["task_id"]
+                )
+                answer = "Please confirm the item and current price below." if language == "en" else "请在下方确认商品和当前价格后加入购物车。"
 
         return {
             "candidate_products": candidates,
@@ -403,9 +424,9 @@ class ShoppingAgentWorkflowNodes:
                 NodeTrace.model_validate(trace) for trace in state.get("node_trace", [])
             ],
             decision=state.get("decision"),
+            pending_action=state.get("pending_action"),
         ).to_dict()
         return {
             "response": response,
             "status": "completed",
-            "pending_action": None,
         }

@@ -4,6 +4,7 @@ import {
   addCart,
   clearCart,
   compareProducts,
+  confirmAgentCartAction,
   fetchCart,
   fetchCurrentUser,
   fetchFacets,
@@ -11,6 +12,7 @@ import {
   fetchProducts,
   fetchSession,
   login,
+  recordAgentActionCompletion,
   register,
   removeCart,
   streamChat
@@ -89,6 +91,7 @@ export default function App() {
         onProducts: store.setProducts,
         onComparison: store.setComparison,
         onDecision: store.setDecision,
+        onConfirmRequired: store.setPendingAction,
         onMessage: store.appendAssistant,
         onError: () => undefined
       }, store.accessToken);
@@ -98,6 +101,19 @@ export default function App() {
       setNotice(text);
     } finally {
       store.setStreaming(false);
+    }
+  };
+
+  const confirmPendingAction = async () => {
+    if (!store.accessToken || !store.pendingAction) return;
+    try {
+      const item = await confirmAgentCartAction(store.accessToken, store.pendingAction);
+      await recordAgentActionCompletion(store.accessToken, store.pendingAction.action_id, item.id);
+      store.setCart(await fetchCart(store.accessToken));
+      store.setPendingAction(null);
+      setNotice(t("added"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("addFailed"));
     }
   };
 
@@ -205,7 +221,7 @@ export default function App() {
       <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
       <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
       <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
-      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} onSubmit={submit} />
+      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} pendingAction={store.pendingAction} onConfirm={confirmPendingAction} onSubmit={submit} />
     </div>
   );
 }

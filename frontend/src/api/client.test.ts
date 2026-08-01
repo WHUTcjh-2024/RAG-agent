@@ -73,6 +73,7 @@ describe("buildProductQuery", () => {
       "event: node\ndata: {\"state\":\"started\"}",
       "event: meta\ndata: {\"session_id\":\"session-1\",\"intent\":\"text_recommendation\",\"slots\":{}}",
       "event: decision\ndata: {\"card\":{\"decision_id\":\"decision-1\",\"verdict\":\"RECOMMEND_BUY\",\"confidence\":0.86,\"fit_risks\":[],\"reasons\":[],\"evidence\":[],\"missing_fields\":[],\"alternatives\":[]}}",
+      "event: confirm_required\ndata: {\"action_id\":\"action-1\",\"action_type\":\"ADD_CART_ITEM\",\"summary\":\"加入购物车\",\"expires_at\":\"2026-08-01T00:00:00Z\",\"confirmation_token\":\"token\",\"product\":{\"article_id\":\"1\",\"prod_name\":\"衬衫\",\"price\":10}}",
       "event: message\ndata: {\"delta\":\"推荐结果\"}",
       "event: done\ndata: {\"ok\":true}",
       ""
@@ -90,12 +91,14 @@ describe("buildProductQuery", () => {
     const onMeta = vi.fn<(payload: { request_id?: string; session_id: string; intent: string; slots: Slots }) => void>();
     const onMessage = vi.fn<(delta: string) => void>();
     const onDecision = vi.fn();
+    const onConfirmRequired = vi.fn();
     await streamChat("推荐衬衫", "session-1", null, "zh", {
       onMeta,
       onTool: vi.fn<(trace: ToolTrace) => void>(),
       onProducts: vi.fn(),
       onComparison: vi.fn(),
       onDecision,
+      onConfirmRequired,
       onMessage,
       onError: vi.fn()
     });
@@ -107,5 +110,6 @@ describe("buildProductQuery", () => {
       verdict: "RECOMMEND_BUY",
       confidence: 0.86
     }));
+    expect(onConfirmRequired).toHaveBeenCalledWith(expect.objectContaining({ action_id: "action-1" }));
   });
 });

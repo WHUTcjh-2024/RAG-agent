@@ -35,6 +35,15 @@ public class CartController {
             .subscribeOn(Schedulers.boundedElastic());
     }
 
+    @PostMapping("/agent-actions/confirm")
+    public Mono<CartItemView> confirmAgentAction(
+        @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+        @RequestBody AgentCartConfirmationRequest request
+    ) {
+        return Mono.fromCallable(() -> cartService.confirmAgentAction(authorization, request))
+            .subscribeOn(Schedulers.boundedElastic());
+    }
+
     @GetMapping
     public Mono<CartView> currentCart(
         @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization

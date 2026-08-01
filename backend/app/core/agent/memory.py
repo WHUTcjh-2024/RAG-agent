@@ -81,6 +81,19 @@ class AgentMemoryStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS agent_actions (
+                    action_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    cart_item_id TEXT,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_task_commits (
                     task_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -281,3 +294,27 @@ class AgentMemoryStore:
             state.updated_at = datetime.now(timezone.utc)
             self._sessions[session_id] = state
             return True
+
+    def save_pending_action(self, action: dict[str, Any], user_id: str, task_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_actions (action_id, task_id, user_id, status, expires_at)
+                VALUES (?, ?, ?, 'pending', ?)
+                ON CONFLICT(action_id) DO NOTHING
+                """,
+                (action["action_id"], task_id, user_id, action["expires_at"]),
+            )
+
+    def complete_action(self, action_id: str, user_id: str, cart_item_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_actions
+                SET status='completed', cart_item_id=?, updated_at=CURRENT_TIMESTAMP
+                WHERE action_id=? AND user_id=? AND status='pending'
+                  AND expires_at >= CURRENT_TIMESTAMP
+                """,
+                (cart_item_id, action_id, user_id),
+            )
+            return cursor.rowcount == 1

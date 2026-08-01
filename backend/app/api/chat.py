@@ -13,6 +13,7 @@ from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
+from pydantic import BaseModel, Field
 from fastapi.responses import Response, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 
@@ -37,6 +38,10 @@ _workflow_instance: RecoverableShoppingAgentWorkflow | None = None
 _workflow_orchestrator: ShoppingAgentOrchestrator | None = None
 _workflow_path: str | None = None
 _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
+
+
+class ActionCompletionRequest(BaseModel):
+    cart_item_id: str = Field(min_length=1, max_length=100)
 
 
 @lru_cache(maxsize=1)
@@ -318,6 +323,8 @@ async def chat_stream(
                 for evidence in response["decision"]["evidence"]:
                     yield sse(SSEEvent.EVIDENCE, {"item": evidence})
                 yield sse(SSEEvent.DECISION, {"card": response["decision"]})
+            if response.get("pending_action"):
+                yield sse(SSEEvent.CONFIRM_REQUIRED, response["pending_action"])
             answer = response["answer"]
             for start in range(0, len(answer), 24):
                 yield sse(
@@ -345,3 +352,18 @@ async def chat_stream(
             "X-Agent-Task-Id": actual_task_id,
         },
     )
+
+
+@router.post("/actions/{action_id}/completed")
+async def complete_action(
+    action_id: str,
+    payload: ActionCompletionRequest,
+    request: Request,
+) -> dict[str, bool]:
+    user_id = trusted_user_id_from(request)
+    if not user_id:
+        raise invalid_input("Trusted user context is required.", status_code=401)
+    completed = get_memory().complete_action(action_id, user_id, payload.cart_item_id)
+    if not completed:
+        raise invalid_input("Action is invalid, expired, or already completed.", status_code=409)
+    return {"ok": True}
