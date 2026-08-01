@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.core.agent.contracts import ErrorCode
 from app.core.agent.errors import AgentException, invalid_input
+from app.core.agent.resilience import CircuitBreaker
 
 
 REQUIRED_CATEGORIES = ("TOP", "BOTTOM")
@@ -44,6 +45,7 @@ class JavaWardrobeProvider:
     def __init__(self, base_url: str | None = None, timeout_seconds: float = 2) -> None:
         self.base_url = (base_url or os.getenv("AGENT_FACTS_BASE_URL", "")).rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._breaker = CircuitBreaker("load_wardrobe")
 
     def get(self, *, user_id: str) -> WardrobeSnapshot:
         if not self.base_url:
@@ -60,9 +62,14 @@ class JavaWardrobeProvider:
             headers={"X-Agent-Internal-Token": token},
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-                payload = json.loads(response.read().decode("utf-8"))
+            def load() -> dict[str, Any]:
+                with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+                    return json.loads(response.read().decode("utf-8"))
+
+            payload = self._breaker.call(load)
         except Exception as error:
+            if isinstance(error, AgentException) and error.code == ErrorCode.UPSTREAM_UNAVAILABLE:
+                raise
             raise AgentException(
                 ErrorCode.BUSINESS_FACT_UNAVAILABLE,
                 "Java wardrobe facts are temporarily unavailable.",

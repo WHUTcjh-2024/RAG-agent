@@ -4,6 +4,7 @@ import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock, RLock
 from time import perf_counter
@@ -14,7 +15,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
 
-from app.core.agent.contracts import AgentResponse, NodeTrace
+from app.core.agent.contracts import AgentResponse, ErrorCode, NodeTrace
 from app.core.agent.errors import AgentException, invalid_input
 from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
@@ -25,11 +26,24 @@ from app.core.agent.workflow_state import (
     workflow_enabled as workflow_enabled,
 )
 from app.core.request_id import normalize_request_id
+from app.core.agent.telemetry import telemetry
 
 
 DEFAULT_CHECKPOINT_DB = (
     Path(__file__).resolve().parents[3] / "data" / "sqlite" / "agent_checkpoints.db"
 )
+DEFAULT_CHECKPOINT_TTL_SECONDS = 24 * 60 * 60
+
+
+def _checkpoint_ttl_seconds() -> int:
+    configured = os.getenv("CHECKPOINT_TTL_SECONDS", str(DEFAULT_CHECKPOINT_TTL_SECONDS))
+    try:
+        seconds = int(configured)
+    except ValueError as error:
+        raise RuntimeError("CHECKPOINT_TTL_SECONDS must be a positive integer.") from error
+    if seconds <= 0:
+        raise RuntimeError("CHECKPOINT_TTL_SECONDS must be a positive integer.")
+    return seconds
 
 
 class _TaskLockPool:
@@ -90,6 +104,16 @@ class RecoverableShoppingAgentWorkflow:
             timeout=30,
             check_same_thread=False,
         )
+        self.checkpoint_ttl_seconds = _checkpoint_ttl_seconds()
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_checkpoint_ttls (
+                task_id TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        self._cleanup_expired_checkpoints()
         self._checkpointer = SqliteSaver(self._connection)
         self._checkpointer.setup()
         self._locks = _TaskLockPool()
@@ -98,6 +122,34 @@ class RecoverableShoppingAgentWorkflow:
 
     def close(self) -> None:
         self._connection.close()
+
+    def _cleanup_expired_checkpoints(self) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.checkpoint_ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        expired = self._connection.execute(
+            "SELECT task_id FROM agent_checkpoint_ttls WHERE updated_at < ?", (cutoff,)
+        ).fetchall()
+        for (task_id,) in expired:
+            self._delete_task_checkpoints(str(task_id))
+        return len(expired)
+
+    def _register_checkpoint_task(self, task_id: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO agent_checkpoint_ttls(task_id) VALUES (?)
+            ON CONFLICT(task_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP
+            """,
+            (task_id,),
+        )
+
+    def _delete_task_checkpoints(self, task_id: str) -> None:
+        self._connection.execute("DELETE FROM checkpoints WHERE thread_id=?", (task_id,))
+        self._connection.execute("DELETE FROM writes WHERE thread_id=?", (task_id,))
+        self._connection.execute("DELETE FROM agent_checkpoint_ttls WHERE task_id=?", (task_id,))
+
+    def purge_tasks(self, task_ids: list[str]) -> None:
+        with self._locks.hold("checkpoint-cleanup"):
+            for task_id in task_ids:
+                self._delete_task_checkpoints(validate_task_id(task_id))
 
     @staticmethod
     def _fingerprint(
@@ -130,7 +182,22 @@ class RecoverableShoppingAgentWorkflow:
             writer({"node": node, "state": "started"})
             started = perf_counter()
             try:
-                updates: AgentState = function(state)
+                if self.orchestrator.memory.task_cancelled(state["task_id"]):
+                    raise AgentException(
+                        ErrorCode.TASK_CANCELLED,
+                        "Task was cancelled.",
+                        status_code=409,
+                        stage=node,
+                    )
+                with telemetry.span(
+                    f"agent.node.{node}",
+                    **{
+                        "agent.task_id": state["task_id"],
+                        "agent.request_id": state["request_id"],
+                        "agent.node": node,
+                    },
+                ):
+                    updates: AgentState = function(state)
             except Exception as error:
                 duration_ms = round((perf_counter() - started) * 1000, 3)
                 writer(
@@ -369,6 +436,11 @@ class RecoverableShoppingAgentWorkflow:
             trusted_user_id=trusted_user_id,
         )
         config = self._config(task_id)
+        self._cleanup_expired_checkpoints()
+        self._register_checkpoint_task(task_id)
+        self.orchestrator.memory.register_task(
+            task_id, initial["session_id"], initial["trusted_user_id"]
+        )
         with self._locks.hold(task_id):
             graph_input, recovered = self._resume_input(
                 config=config,
@@ -388,19 +460,28 @@ class RecoverableShoppingAgentWorkflow:
                 }
                 return
 
-            for part in self.graph.stream(
-                graph_input,
-                config,
-                stream_mode="custom",
-                version="v2",
+            with telemetry.span(
+                "agent.task",
+                **{
+                    "agent.task_id": task_id,
+                    "agent.request_id": initial["request_id"],
+                    "agent.recovered": recovered,
+                },
             ):
-                if part["type"] == "custom":
-                    yield {"type": "node", "data": part["data"]}
+                for part in self.graph.stream(
+                    graph_input,
+                    config,
+                    stream_mode="custom",
+                    version="v2",
+                ):
+                    if part["type"] == "custom":
+                        yield {"type": "node", "data": part["data"]}
 
             completed = self.graph.get_state(config)
             if completed.values.get("status") != "completed":
                 raise RuntimeError("Agent workflow stopped before completion.")
             response = AgentResponse.model_validate(completed.values["response"])
+            self.orchestrator.memory.complete_task(task_id)
             yield {
                 "type": "result",
                 "response": response.model_copy(
@@ -410,6 +491,22 @@ class RecoverableShoppingAgentWorkflow:
                     }
                 ).to_dict(),
             }
+
+    def cancel(self, *, task_id: str, session_id: str, trusted_user_id: str | None) -> bool:
+        task_id = validate_task_id(task_id)
+        session_id = validate_session_id(session_id)
+        state = self.get_task_state(task_id)
+        context = self.orchestrator.memory.task_context(task_id)
+        if state and state.get("session_id") != session_id:
+            raise invalid_input("Task does not belong to this session.", status_code=404)
+        if context and context[0] != session_id:
+            raise invalid_input("Task does not belong to this session.", status_code=404)
+        expected_user_id = state.get("trusted_user_id") if state else (context[1] if context else session_id)
+        if state.get("trusted_context") and trusted_user_id != expected_user_id:
+            raise invalid_input("Trusted user context is required.", status_code=401)
+        if context and context[1] != session_id and trusted_user_id != expected_user_id:
+            raise invalid_input("Trusted user context is required.", status_code=401)
+        return self.orchestrator.memory.cancel_task(task_id, session_id, expected_user_id)
 
     def get_task_state(self, task_id: str) -> AgentState:
         config = self._config(validate_task_id(task_id))

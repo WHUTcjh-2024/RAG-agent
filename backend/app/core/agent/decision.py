@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.core.agent.resilience import CircuitBreaker
+
 
 
 class DecisionVerdict(str, Enum):
@@ -91,6 +93,7 @@ class JavaDecisionFactsProvider:
     def __init__(self, base_url: str | None = None, timeout_seconds: float = 2) -> None:
         self.base_url = (base_url or os.getenv("AGENT_FACTS_BASE_URL", "")).rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self._breaker = CircuitBreaker("load_business_facts")
 
     def get(self, *, user_id: str, product_id: str) -> DecisionFacts | None:
         if not self.base_url:
@@ -102,9 +105,15 @@ class JavaDecisionFactsProvider:
             headers={"X-Agent-Internal-Token": token},
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-                payload = json.loads(response.read().decode("utf-8"))
+            def load() -> dict[str, Any]:
+                with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+                    return json.loads(response.read().decode("utf-8"))
+
+            payload = self._breaker.call(load)
         except Exception as error:
+            if getattr(error, "code", None) is not None:
+                raise
+
             from app.core.agent.contracts import ErrorCode
             from app.core.agent.errors import AgentException
 

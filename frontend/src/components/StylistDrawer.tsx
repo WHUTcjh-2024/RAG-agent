@@ -4,7 +4,7 @@ import { ChatPanel } from "./ChatPanel";
 import { InsightPanel } from "./InsightPanel";
 import { useTranslation } from "../i18n";
 
-type Props = { open: boolean; onClose: () => void; messages: Message[]; streaming: boolean; slots: Slots; traces: ToolTrace[]; decision: DecisionCard | null; pendingAction: PendingCartAction | null; wardrobe: WardrobeSnapshot | null; wardrobePlan: WardrobePlan | null; products: Product[]; onPlanEdit: (operation: Record<string, unknown>) => void; onPlanAccept: () => void; onConfirm: () => void; onSubmit: (message: string, image: File | null, preview: string | null) => void };
+type Props = { open: boolean; onClose: () => void; messages: Message[]; streaming: boolean; slots: Slots; traces: ToolTrace[]; decision: DecisionCard | null; pendingAction: PendingCartAction | null; wardrobe: WardrobeSnapshot | null; wardrobePlan: WardrobePlan | null; products: Product[]; onPlanEdit: (operation: Record<string, unknown>) => void; onPlanAccept: () => void; onConfirm: () => void; onSubmit: (message: string, image: File | null, preview: string | null) => void; onCancel: () => void };
 
 const productCategory = (product: Product) => {
   const value = `${product.product_type_name || ""} ${product.product_group_name || ""}`.toLowerCase();
@@ -13,7 +13,7 @@ const productCategory = (product: Product) => {
   return "OTHER";
 };
 
-export function StylistDrawer({ open, onClose, messages, streaming, slots, traces, decision, pendingAction, wardrobe, wardrobePlan, products, onPlanEdit, onPlanAccept, onConfirm, onSubmit }: Props) {
+export function StylistDrawer({ open, onClose, messages, streaming, slots, traces, decision, pendingAction, wardrobe, wardrobePlan, products, onPlanEdit, onPlanAccept, onConfirm, onSubmit, onCancel }: Props) {
   const { t } = useTranslation();
   if (!open) return null;
   return (
@@ -24,7 +24,7 @@ export function StylistDrawer({ open, onClose, messages, streaming, slots, trace
           <div><span className="eyebrow">{t("appointment")}</span><h2 className="mt-1 font-display text-xl">{t("stylist")}</h2></div>
           <button onClick={onClose} className="icon-button" aria-label={t("close")}><X size={18} /></button>
         </div>
-        <div className="p-4"><ChatPanel messages={messages} streaming={streaming} onSubmit={onSubmit} />
+        <div className="p-4"><ChatPanel messages={messages} streaming={streaming} onSubmit={onSubmit} onCancel={onCancel} />
           {decision && <section className="mt-4 border border-ink/10 bg-paper p-4 text-sm">
             <p className="eyebrow">购买决策</p><p className="mt-1 font-display text-lg">{decision.verdict.replaceAll("_", " ")}</p>
             <p className="mt-2 text-xs text-muted">置信度 {Math.round(decision.confidence * 100)}%{decision.recommended_size ? ` · 建议尺码 ${decision.recommended_size}` : ""}</p>
