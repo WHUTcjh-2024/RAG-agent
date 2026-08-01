@@ -85,10 +85,11 @@ git pull --ff-only
 cp .env.example .env
 ```
 
-编辑 `.env`，至少替换以下三个示例值：
+编辑 `.env`，至少替换以下四个示例值：
 
 ```text
 AUTH_JWT_SECRET=
+AGENT_INTERNAL_TOKEN=
 POSTGRES_PASSWORD=
 REDIS_PASSWORD=
 ```

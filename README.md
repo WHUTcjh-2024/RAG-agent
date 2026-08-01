@@ -37,7 +37,7 @@ git pull --ff-only
 cp .env.example .env
 ```
 
-编辑 `.env`，将 `AUTH_JWT_SECRET`、`POSTGRES_PASSWORD` 和 `REDIS_PASSWORD` 改为强随机值。不要提交 `.env`。
+编辑 `.env`，将 `AUTH_JWT_SECRET`、`AGENT_INTERNAL_TOKEN`、`POSTGRES_PASSWORD` 和 `REDIS_PASSWORD` 改为强随机值。不要提交 `.env`。
 
 ```bash
 docker compose up -d --build
