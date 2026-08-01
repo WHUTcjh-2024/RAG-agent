@@ -105,6 +105,17 @@ curl --fail http://127.0.0.1:8080/actuator/prometheus | head
 
 预期健康检查返回 `UP`，Prometheus 地址返回文本指标。生产环境自动启用 `prod` Profile，Java 使用 PostgreSQL 保存用户、购物车和订单数据；Redis 只缓存订单列表，失效或不可用时订单查询会自动回退到 PostgreSQL。
 
+## 从旧 H2 Compose 升级
+
+此前 Compose 中的 Java 服务使用 `java-backend/data` 下的 H2 文件。本次升级改为 PostgreSQL，**不会自动迁移旧 H2 中的用户、购物车和订单数据**。如果该目录包含需要保留的数据，请先停止旧服务并备份，再安排单独的数据迁移和校验；不要直接按新流程启动后假定旧数据已经出现。
+
+```bash
+docker compose down
+tar -czf java-backend-h2-backup-$(date +%F).tgz java-backend/data
+```
+
+若其中只是本地开发测试数据，完成备份后可以按上面的 PostgreSQL 部署流程从空库开始。生产数据迁移需要先演练导出、导入和回滚，不应把它和首次容器升级混在一起执行。
+
 查看运行日志：
 
 ```bash

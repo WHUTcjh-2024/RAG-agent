@@ -23,6 +23,8 @@ spring:
       password: ${SPRING_DATA_REDIS_PASSWORD}
   cache:
     type: redis
+    redis:
+      time-to-live: 5m
   jpa:
     hibernate:
       ddl-auto: validate

@@ -11,6 +11,12 @@ services:
       - ./backend/data:/app/data
     ports:
       - "18000:18000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; health = json.load(urllib.request.urlopen('http://127.0.0.1:18000/health')); assert health['status'] == 'ready'"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
   postgres:
     image: postgres:16-alpine
     environment:
@@ -29,7 +35,8 @@ services:
     image: redis:7-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?请设置 REDIS_PASSWORD}
-    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory \"$$REDIS_MAXMEMORY\" --maxmemory-policy allkeys-lru"]
     healthcheck:
       test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
@@ -40,7 +47,7 @@ services:
     build: ./java-backend
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

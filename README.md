@@ -47,3 +47,5 @@ curl --fail http://127.0.0.1:8080/actuator/prometheus | head
 ```
 
 详情见 [Java 后端部署说明](java-backend/README.md)。
+
+已有 H2 数据的环境请先阅读其中的“从旧 H2 Compose 升级”章节；本次 PostgreSQL 切换不会自动迁移旧数据。
