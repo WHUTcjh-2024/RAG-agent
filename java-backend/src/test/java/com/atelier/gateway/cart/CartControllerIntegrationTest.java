@@ -6,6 +6,9 @@ import com.atelier.gateway.user.UserRepository;
 import com.atelier.gateway.decision.ProductSkuFact;
 import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.security.JwtTokenService;
+import com.atelier.gateway.wardrobe.WardrobeFeedbackEventRepository;
+import com.atelier.gateway.wardrobe.WardrobeItemRepository;
+import com.atelier.gateway.wardrobe.WardrobeVersionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -46,6 +49,15 @@ class CartControllerIntegrationTest {
     private AgentCartActionCommitRepository actionCommitRepository;
 
     @Autowired
+    private WardrobeItemRepository wardrobeItemRepository;
+
+    @Autowired
+    private WardrobeFeedbackEventRepository wardrobeFeedbackRepository;
+
+    @Autowired
+    private WardrobeVersionRepository wardrobeVersionRepository;
+
+    @Autowired
     private JwtTokenService jwtTokenService;
 
     @Autowired
@@ -56,6 +68,9 @@ class CartControllerIntegrationTest {
     @BeforeEach
     void cleanDatabase() {
         actionCommitRepository.deleteAll();
+        wardrobeFeedbackRepository.deleteAll();
+        wardrobeItemRepository.deleteAll();
+        wardrobeVersionRepository.deleteAll();
         productFactRepository.deleteAll();
         try {
             jdbcTemplate.update("DELETE FROM cart_items");
@@ -180,6 +195,57 @@ class CartControllerIntegrationTest {
             .bodyValue("{\"confirmationToken\":\"%s\"}".formatted(confirmation))
             .exchange()
             .expectStatus().isEqualTo(409);
+    }
+
+    @Test
+    void wardrobeIsVersionedAndScopedToTheCurrentUser() throws IOException {
+        String ownerToken = registerAndToken("wardrobe-owner@example.com");
+        String otherToken = registerAndToken("wardrobe-other@example.com");
+        byte[] response = webTestClient.post()
+            .uri("/api/wardrobe/items")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + ownerToken)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("""
+                {"name":"White shirt","category":"Shirt","color":"White","sourceProductId":"sku-wardrobe"}
+                """)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.version").isEqualTo(1)
+            .jsonPath("$.items.length()").isEqualTo(1)
+            .jsonPath("$.items[0].name").isEqualTo("White shirt")
+            .returnResult().getResponseBody();
+        String itemId = objectMapper.readTree(new String(response, StandardCharsets.UTF_8))
+            .at("/items/0/id").asText();
+
+        webTestClient.delete()
+            .uri("/api/wardrobe/items/{itemId}", itemId)
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + otherToken)
+            .exchange()
+            .expectStatus().isNotFound();
+
+        webTestClient.post()
+            .uri("/api/wardrobe/feedback")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + ownerToken)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("{\"taskId\":\"wardrobe-task\",\"planRef\":\"plan-1\",\"itemRef\":\"%s\",\"outcome\":\"ADOPTED\",\"fitFeedback\":\"GOOD_FIT\"}".formatted(itemId))
+            .exchange()
+            .expectStatus().isNoContent();
+
+        webTestClient.delete()
+            .uri("/api/wardrobe/items/{itemId}", itemId)
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + ownerToken)
+            .exchange()
+            .expectStatus().isNoContent();
+
+        webTestClient.get()
+            .uri("/api/wardrobe")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + ownerToken)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.version").isEqualTo(2)
+            .jsonPath("$.items.length()").isEqualTo(0);
     }
 
     @Test

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.core.agent.contracts import AgentResponse, Intent, NodeTrace, ToolTrace
@@ -8,6 +9,7 @@ from app.core.agent.errors import invalid_input
 from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.agent.workflow_state import AgentState, validate_task_id
+from app.core.agent.wardrobe import WardrobeItem, WardrobePlanner, WardrobeSnapshot
 from app.core.request_id import normalize_request_id
 
 
@@ -39,7 +41,7 @@ class ShoppingAgentWorkflowNodes:
         if node == "understand_request":
             return f"captured {len(updates.get('slots', {}))} request slots"
         if node == "load_context":
-            return f"loaded {len(updates.get('slots', {}))} merged slots"
+            return "loaded versioned wardrobe context" if updates.get("wardrobe_snapshot") else f"loaded {len(updates.get('slots', {}))} merged slots"
         if node == "plan_tools":
             return f"planned {updates.get('planned_tool') or 'no external tool'}"
         if node == "retrieve_candidates":
@@ -55,7 +57,7 @@ class ShoppingAgentWorkflowNodes:
                 return f"built decision card: {decision['verdict']}"
             return f"built {len(updates.get('evidence', []))} evidence records"
         if node == "generate_answer":
-            return "generated grounded answer"
+            return "generated wardrobe plan" if updates.get("wardrobe_plan") else "generated grounded answer"
         if node == "wait_for_confirmation":
             return "prepared Java commerce handoff"
         if node == "complete":
@@ -115,7 +117,13 @@ class ShoppingAgentWorkflowNodes:
     def load_context(self, state: AgentState) -> AgentState:
         session = self.orchestrator.memory.get(state["session_id"])
         slots = self._merge_slots(session.slots, state.get("slots", {}))
-        return {
+        intent = self.orchestrator.planner.choose(
+            state["message"],
+            bool(state.get("image_path")),
+            lambda: self.orchestrator.classify_intent(state["message"], bool(state.get("image_path"))),
+        )
+        updates: AgentState = {
+            "intent": intent.value,
             "slots": slots,
             "context_refs": {
                 "history_count": len(session.history.messages),
@@ -123,6 +131,15 @@ class ShoppingAgentWorkflowNodes:
             },
             "status": "context_loaded",
         }
+        if intent == Intent.WARDROBE_PLAN and state.get("trusted_context"):
+            snapshot = self.orchestrator.wardrobe_provider.get(user_id=state["trusted_user_id"])
+            updates["wardrobe_snapshot"] = self._snapshot_to_state(snapshot)
+            updates["context_refs"] = {
+                **updates["context_refs"],
+                "wardrobe_version": snapshot.version,
+                "wardrobe_item_count": len(snapshot.items),
+            }
+        return updates
 
     def plan_tools(self, state: AgentState) -> AgentState:
         message = state["message"]
@@ -177,6 +194,17 @@ class ShoppingAgentWorkflowNodes:
                 arguments = {"product_id": product_ids[0]}
             else:
                 missing_fields = ["cart_product_id"]
+        elif intent == Intent.WARDROBE_PLAN:
+            snapshot_data = state.get("wardrobe_snapshot")
+            if not state.get("trusted_context"):
+                missing_fields = ["authenticated_user"]
+            elif not snapshot_data:
+                missing_fields = ["wardrobe_snapshot"]
+            else:
+                missing = WardrobePlanner().missing_categories(self._snapshot_from_state(snapshot_data), slots)
+                if missing:
+                    tool = "search_products_by_text"
+                    arguments = {"query": " ".join(missing), "filters": {}, "top_k": min(12, max(6, len(missing) * 3))}
 
         return {
             "intent": intent.value,
@@ -330,6 +358,7 @@ class ShoppingAgentWorkflowNodes:
         language = state.get("language", "zh")
         candidates = [dict(product) for product in state.get("candidate_products", [])]
         pending_action = None
+        wardrobe_plan = None
 
         if state.get("decision"):
             decision = state["decision"]
@@ -338,6 +367,23 @@ class ShoppingAgentWorkflowNodes:
                 if language == "zh"
                 else f"Purchase decision: {decision['verdict']}."
             )
+        elif intent == Intent.WARDROBE_PLAN:
+            if not state.get("trusted_context"):
+                answer = "Please sign in so I can use your wardrobe." if language == "en" else "请先登录，以便我优先使用你的衣橱单品。"
+            elif not state.get("wardrobe_snapshot"):
+                answer = "Your wardrobe is temporarily unavailable; please retry." if language == "en" else "衣橱数据暂时不可用，请稍后重试。"
+            else:
+                wardrobe_plan = WardrobePlanner().create_plan(
+                    snapshot=self._snapshot_from_state(state["wardrobe_snapshot"]),
+                    slots=state.get("slots", {}),
+                    candidates=candidates,
+                )
+                complete = sum(1 for outfit in wardrobe_plan["outfits"] if outfit["complete"])
+                answer = (
+                    f"Prepared {complete} executable outfit option(s); only missing categories were searched."
+                    if language == "en"
+                    else f"已生成 {complete} 套可执行穿搭，只检索了衣橱中缺失的品类。"
+                )
         elif intent in {
             Intent.TEXT_RECOMMENDATION,
             Intent.IMAGE_SEARCH,
@@ -383,6 +429,7 @@ class ShoppingAgentWorkflowNodes:
             "candidate_products": candidates,
             "answer": answer,
             "pending_action": pending_action,
+            "wardrobe_plan": wardrobe_plan,
             "status": "answer_ready",
         }
 
@@ -425,8 +472,35 @@ class ShoppingAgentWorkflowNodes:
             ],
             decision=state.get("decision"),
             pending_action=state.get("pending_action"),
+            wardrobe_plan=state.get("wardrobe_plan"),
         ).to_dict()
         return {
             "response": response,
             "status": "completed",
         }
+
+    @staticmethod
+    def _snapshot_to_state(snapshot: WardrobeSnapshot) -> dict[str, Any]:
+        return {
+            "version": snapshot.version,
+            "observed_at": snapshot.observed_at.isoformat(),
+            "items": [
+                {
+                    "id": item.id,
+                    "source_product_id": item.source_product_id,
+                    "name": item.name,
+                    "category": item.category,
+                    "color": item.color,
+                    "image_url": item.image_url,
+                }
+                for item in snapshot.items
+            ],
+        }
+
+    @staticmethod
+    def _snapshot_from_state(payload: dict[str, Any]) -> WardrobeSnapshot:
+        return WardrobeSnapshot(
+            version=int(payload["version"]),
+            observed_at=datetime.fromisoformat(payload["observed_at"].replace("Z", "+00:00")),
+            items=[WardrobeItem(**item) for item in payload.get("items", [])],
+        )

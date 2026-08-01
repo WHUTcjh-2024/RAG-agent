@@ -273,6 +273,8 @@ class RecoverableShoppingAgentWorkflow:
             "status": "new",
             "decision_product_id": decision_product_id,
             "decision": None,
+            "wardrobe_snapshot": None,
+            "wardrobe_plan": None,
         }
 
     @staticmethod

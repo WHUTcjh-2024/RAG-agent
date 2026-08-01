@@ -14,6 +14,7 @@ class Intent(str, Enum):
     HYBRID_SEARCH = "hybrid_search"
     COMPARE = "compare"
     CART_HANDOFF = "cart_handoff"
+    WARDROBE_PLAN = "wardrobe_plan"
 
 
 class SSEEvent(str, Enum):
@@ -22,6 +23,7 @@ class SSEEvent(str, Enum):
     EVIDENCE = "evidence"
     DECISION = "decision"
     CONFIRM_REQUIRED = "confirm_required"
+    WARDROBE_PLAN = "wardrobe_plan"
     META = "meta"
     TOOL = "tool"
     PRODUCTS = "products"
@@ -71,6 +73,7 @@ class AgentResponse(BaseModel):
     node_trace: list[NodeTrace] = Field(default_factory=list)
     decision: DecisionCard | None = None
     pending_action: dict[str, Any] | None = None
+    wardrobe_plan: dict[str, Any] | None = None
     recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:

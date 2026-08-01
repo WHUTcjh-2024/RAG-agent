@@ -15,6 +15,7 @@ from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.agent.tool_registry import CommerceToolset, ToolRegistry
+from app.core.agent.wardrobe import JavaWardrobeProvider, WardrobeProvider
 from app.core.llm import GroundedRecommendationGenerator
 from app.core.request_id import normalize_request_id
 
@@ -31,6 +32,7 @@ class ShoppingAgentOrchestrator:
         memory: AgentMemoryStore | None = None,
         reason_generator: GroundedRecommendationGenerator | None = None,
         decision_facts_provider: DecisionFactsProvider | None = None,
+        wardrobe_provider: WardrobeProvider | None = None,
     ) -> None:
         self.memory = memory or AgentMemoryStore()
         self.slot_extractor = SlotExtractor()
@@ -45,6 +47,7 @@ class ShoppingAgentOrchestrator:
         self.planner = AgentPlanner(self.registry.tools)
         self.decision_facts_provider = decision_facts_provider or JavaDecisionFactsProvider()
         self.decision_card_builder = DecisionCardBuilder()
+        self.wardrobe_provider = wardrobe_provider or JavaWardrobeProvider()
 
     @staticmethod
     def classify_intent(message: str, has_image: bool) -> Intent:
@@ -55,6 +58,10 @@ class ShoppingAgentOrchestrator:
             "checkout", "place order", "cart", "bag",
         )):
             return Intent.CART_HANDOFF
+        if any(term in folded for term in (
+            "wardrobe", "outfit", "衣橱", "穿搭", "套搭", "套衣服",
+        )):
+            return Intent.WARDROBE_PLAN
         if any(term in folded for term in ("对比", "比较", "哪个好", "哪件更", "compare", "which is better")):
             return Intent.COMPARE
         if has_image and text:

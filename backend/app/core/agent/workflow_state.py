@@ -44,6 +44,8 @@ class AgentState(TypedDict, total=False):
     response: dict[str, Any]
     decision_product_id: str | None
     decision: dict[str, Any] | None
+    wardrobe_snapshot: dict[str, Any] | None
+    wardrobe_plan: dict[str, Any] | None
 
 
 def validate_task_id(task_id: str) -> str:

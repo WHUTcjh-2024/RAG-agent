@@ -10,9 +10,12 @@ import {
   fetchFacets,
   fetchProduct,
   fetchProducts,
+  fetchWardrobe,
   fetchSession,
   login,
   recordAgentActionCompletion,
+  recordWardrobeFeedback,
+  replanWardrobe,
   register,
   removeCart,
   streamChat
@@ -56,6 +59,9 @@ export default function App() {
         store.setAuth(store.accessToken, user);
         store.setCart(cart);
       }).catch(() => store.setAuth("", null));
+      fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => {
+        // Wardrobe is additive; unavailable Java data must not invalidate login or cart state.
+      });
     }
   }, []);
 
@@ -92,6 +98,7 @@ export default function App() {
         onComparison: store.setComparison,
         onDecision: store.setDecision,
         onConfirmRequired: store.setPendingAction,
+        onWardrobePlan: store.setWardrobePlan,
         onMessage: store.appendAssistant,
         onError: () => undefined
       }, store.accessToken);
@@ -114,6 +121,26 @@ export default function App() {
       setNotice(t("added"));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : t("addFailed"));
+    }
+  };
+
+  const editWardrobePlan = async (operation: Record<string, unknown>) => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try {
+      store.setWardrobePlan(await replanWardrobe(store.accessToken, store.wardrobePlan.plan_id, store.wardrobePlan, operation));
+      store.setWardrobe(await fetchWardrobe(store.accessToken));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("requestFailed"));
+    }
+  };
+
+  const acceptWardrobePlan = async () => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try {
+      await recordWardrobeFeedback(store.accessToken, { planRef: store.wardrobePlan.plan_id, outcome: "ADOPTED" });
+      setNotice("已记录本次穿搭采纳");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("requestFailed"));
     }
   };
 
@@ -221,7 +248,7 @@ export default function App() {
       <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
       <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
       <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
-      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} pendingAction={store.pendingAction} onConfirm={confirmPendingAction} onSubmit={submit} />
+      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} pendingAction={store.pendingAction} wardrobe={store.wardrobe} wardrobePlan={store.wardrobePlan} products={store.products} onPlanEdit={editWardrobePlan} onPlanAccept={acceptWardrobePlan} onConfirm={confirmPendingAction} onSubmit={submit} />
     </div>
   );
 }

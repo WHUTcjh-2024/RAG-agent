@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copyfile
 
@@ -27,6 +28,7 @@ from app.core.llm import GroundedRecommendationGenerator
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
+from app.core.agent.wardrobe import WardrobeItem, WardrobeSnapshot
 from app.main import app
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
@@ -159,6 +161,38 @@ def test_authenticated_cart_route_returns_confirmation_without_writing_cart(
     assert response.pending_action["product"]["article_id"] == "0000000001"
     assert response.pending_action["confirmation_token"].count(".") == 1
     assert response.tool_trace[0].tool == "get_product_detail"
+
+
+def test_wardrobe_task_uses_versioned_context_and_only_searches_missing_categories(
+    tmp_path: Path,
+) -> None:
+    class FixtureWardrobe:
+        def get(self, *, user_id: str) -> WardrobeSnapshot:
+            assert user_id == "trusted-user"
+            return WardrobeSnapshot(
+                version=7,
+                observed_at=datetime.now(timezone.utc),
+                items=[WardrobeItem("shirt-1", None, "White shirt", "Shirt", "White", None)],
+            )
+
+    workflow, orchestrator = create_workflow(tmp_path)
+    orchestrator.wardrobe_provider = FixtureWardrobe()
+    try:
+        response = workflow.invoke(
+            task_id="wardrobe-task",
+            message="Plan 2 outfits from my wardrobe for an interview, budget 200",
+            session_id="wardrobe-session",
+            trusted_user_id="trusted-user",
+        )
+        state = workflow.get_task_state("wardrobe-task")
+    finally:
+        workflow.close()
+
+    assert response.intent.value == "wardrobe_plan"
+    assert response.wardrobe_plan is not None
+    assert response.wardrobe_plan["wardrobe_version"] == 7
+    assert state["context_refs"]["wardrobe_version"] == 7
+    assert response.tool_trace[0].tool == "search_products_by_text"
 
 
 def test_transient_retrieval_error_retries_only_failed_node(tmp_path: Path) -> None:
