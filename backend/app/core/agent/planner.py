@@ -51,7 +51,7 @@ class AgentPlanner:
         fallback: Callable[[], Intent],
     ) -> Intent:
         fallback_intent = fallback()
-        if fallback_intent in {Intent.CART_HANDOFF, Intent.COMPARE}:
+        if fallback_intent in {Intent.CART_HANDOFF, Intent.COMPARE, Intent.WARDROBE_PLAN}:
             return fallback_intent
         if self.bound is None:
             return fallback_intent

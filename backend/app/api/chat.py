@@ -26,6 +26,7 @@ from app.core.agent.workflow import (
     validate_task_id,
     workflow_enabled,
 )
+from app.core.agent.wardrobe import WardrobePlanner
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
@@ -42,6 +43,12 @@ _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
 
 class ActionCompletionRequest(BaseModel):
     cart_item_id: str = Field(min_length=1, max_length=100)
+
+
+class WardrobePlanEditRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=100)
+    plan: dict
+    operation: dict
 
 
 @lru_cache(maxsize=1)
@@ -325,6 +332,8 @@ async def chat_stream(
                 yield sse(SSEEvent.DECISION, {"card": response["decision"]})
             if response.get("pending_action"):
                 yield sse(SSEEvent.CONFIRM_REQUIRED, response["pending_action"])
+            if response.get("wardrobe_plan"):
+                yield sse(SSEEvent.WARDROBE_PLAN, {"plan": response["wardrobe_plan"]})
             answer = response["answer"]
             for start in range(0, len(answer), 24):
                 yield sse(
@@ -367,3 +376,19 @@ async def complete_action(
     if not completed:
         raise invalid_input("Action is invalid, expired, or already completed.", status_code=409)
     return {"ok": True}
+
+
+@router.post("/agent/wardrobe/plans/replan")
+async def replan_wardrobe(
+    payload: WardrobePlanEditRequest,
+    request: Request,
+) -> dict:
+    user_id = trusted_user_id_from(request)
+    if not user_id:
+        raise invalid_input("Trusted user context is required.", status_code=401)
+    snapshot = get_orchestrator().wardrobe_provider.get(user_id=user_id)
+    return WardrobePlanner().replan(
+        plan=payload.plan,
+        snapshot=snapshot,
+        operation=payload.operation,
+    )

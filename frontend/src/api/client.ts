@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -10,7 +10,8 @@ const STREAM_EVENT = {
   MESSAGE: "message",
   ERROR: "error",
   DECISION: "decision",
-  CONFIRM_REQUIRED: "confirm_required"
+  CONFIRM_REQUIRED: "confirm_required",
+  WARDROBE_PLAN: "wardrobe_plan"
 } as const;
 
 export class ApiClientError extends Error {
@@ -102,6 +103,7 @@ type StreamHandlers = {
   onComparison: (products: Product[]) => void;
   onDecision: (card: DecisionCard) => void;
   onConfirmRequired: (action: PendingCartAction) => void;
+  onWardrobePlan: (plan: WardrobePlan) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
 };
@@ -163,6 +165,9 @@ export async function streamChat(
           break;
         case STREAM_EVENT.CONFIRM_REQUIRED:
           handlers.onConfirmRequired(payload);
+          break;
+        case STREAM_EVENT.WARDROBE_PLAN:
+          handlers.onWardrobePlan(payload.plan);
           break;
         case STREAM_EVENT.MESSAGE:
           handlers.onMessage(payload.delta || "");
@@ -272,5 +277,34 @@ export async function clearCart(token: string): Promise<void> {
   await ensureOk(await fetch("/api/cart", {
     method: "DELETE",
     headers: authorized(token)
+  }));
+}
+
+export async function fetchWardrobe(token: string): Promise<WardrobeSnapshot> {
+  return (await ensureOk(await fetch("/api/wardrobe", { headers: authorized(token) }))).json();
+}
+
+export async function replanWardrobe(
+  token: string,
+  taskId: string,
+  plan: WardrobePlan,
+  operation: Record<string, unknown>
+): Promise<WardrobePlan> {
+  const response = await ensureOk(await fetch("/api/agent/wardrobe/plans/replan", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ task_id: taskId, plan, operation })
+  }));
+  return response.json();
+}
+
+export async function recordWardrobeFeedback(
+  token: string,
+  feedback: { taskId?: string; planRef?: string; itemRef?: string; outcome: "ADOPTED" | "PURCHASED" | "KEPT" | "RETURNED"; fitFeedback?: "TOO_SMALL" | "TOO_LARGE" | "GOOD_FIT" }
+): Promise<void> {
+  await ensureOk(await fetch("/api/wardrobe/feedback", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify(feedback)
   }));
 }
