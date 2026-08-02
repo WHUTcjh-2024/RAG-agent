@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { GitCompareArrows } from "lucide-react";
+import { createClientId } from "./utils/clientId";
 import {
   addCart,
   cancelAgentTask,
@@ -52,7 +53,7 @@ export default function App() {
     fetchFacets().then(setFacets).catch((error) => setNotice(error.message));
     fetchSession(store.sessionId).then((session) => {
       store.setSlots(session.slots);
-      store.setMessages(session.history.map((item) => ({ ...item, id: crypto.randomUUID() })));
+      store.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
     }).catch((error) => setNotice(error.message));
     if (store.accessToken) {
       Promise.all([
@@ -90,7 +91,7 @@ export default function App() {
   };
 
   const submit = async (message: string, image: File | null, preview: string | null) => {
-    store.addMessage({ id: crypto.randomUUID(), role: "user", content: message || t("similarImage"), imagePreview: preview || undefined });
+    store.addMessage({ id: createClientId(), role: "user", content: message || t("similarImage"), imagePreview: preview || undefined });
     store.setStreaming(true);
     setNotice("");
     activeTaskId.current = null;

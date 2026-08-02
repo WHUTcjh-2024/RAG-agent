@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import type { CartItem, DecisionCard, Message, PendingCartAction, Product, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import { createClientId } from "../utils/clientId";
 
 const sessionId =
-  localStorage.getItem("atelier-session") || `web-${crypto.randomUUID()}`;
+  localStorage.getItem("atelier-session") || `web-${createClientId()}`;
 localStorage.setItem("atelier-session", sessionId);
 const accessToken = localStorage.getItem("atelier-access-token") || "";
 
@@ -63,7 +64,7 @@ export const useAppStore = create<AppState>((set) => ({
       const messages = [...state.messages];
       const last = messages.at(-1);
       if (last?.role === "assistant") last.content += delta;
-      else messages.push({ id: crypto.randomUUID(), role: "assistant", content: delta });
+      else messages.push({ id: createClientId(), role: "assistant", content: delta });
       return { messages };
     }),
   setProducts: (products) => set({ products }),

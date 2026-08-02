@@ -1,4 +1,5 @@
 import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import { createClientId } from "../utils/clientId";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -123,7 +124,7 @@ export async function streamChat(
   form.append("session_id", sessionId);
   form.append("language", language);
   if (image) form.append("file", image);
-  const requestId = crypto.randomUUID();
+  const requestId = createClientId();
   const response = await ensureOk(
     await fetch("/api/chat/stream", {
       method: "POST",

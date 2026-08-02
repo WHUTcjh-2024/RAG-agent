@@ -116,4 +116,28 @@ describe("buildProductQuery", () => {
     expect(onConfirmRequired).toHaveBeenCalledWith(expect.objectContaining({ action_id: "action-1" }));
     expect(onWardrobePlan).toHaveBeenCalledWith(expect.objectContaining({ plan_id: "wardrobe-1" }));
   });
+
+  it("uses a fallback request ID when the page is served over HTTP", async () => {
+    vi.stubGlobal("crypto", {});
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      expect(headers["X-Request-Id"]).toMatch(/^[a-z0-9]+-[a-z0-9]+$/);
+      return new Response("", {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" }
+      });
+    }));
+
+    await streamChat("test", "session-1", null, "zh", {
+      onMeta: vi.fn(),
+      onTool: vi.fn(),
+      onProducts: vi.fn(),
+      onComparison: vi.fn(),
+      onDecision: vi.fn(),
+      onConfirmRequired: vi.fn(),
+      onWardrobePlan: vi.fn(),
+      onMessage: vi.fn(),
+      onError: vi.fn()
+    });
+  });
 });
