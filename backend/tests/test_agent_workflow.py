@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copyfile
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,6 +113,37 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
             )
         }
     assert {"checkpoints", "writes"} <= tables
+
+
+class StreamingRecommendationLLM:
+    def stream(self, _messages):
+        yield SimpleNamespace(content="real-time ")
+        yield SimpleNamespace(content="answer")
+
+
+def test_workflow_emits_provider_tokens_before_final_result(tmp_path: Path) -> None:
+    generator = GroundedRecommendationGenerator(
+        chain=None,
+        streaming_llm=StreamingRecommendationLLM(),
+    )
+    workflow, _ = create_workflow(tmp_path, reason_generator=generator)
+    try:
+        events = list(
+            workflow.stream(
+                task_id="provider-token-stream",
+                message="recommend a red shirt",
+                session_id="stream-session",
+                request_id="stream-request",
+            )
+        )
+    finally:
+        workflow.close()
+
+    tokens = [event["data"]["token"] for event in events if event["type"] == "token"]
+    result_index = next(index for index, event in enumerate(events) if event["type"] == "result")
+    assert tokens == ["real-time ", "answer"]
+    assert all(index < result_index for index, event in enumerate(events) if event["type"] == "token")
+    assert events[result_index]["response"]["answer"] == "real-time answer"
 
 
 def test_cart_route_runs_confirmation_node_without_python_cart_tool(
@@ -429,6 +461,9 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
                 in streamed.text
             )
             assert streamed.text.index("event: node") < streamed.text.index(
+                "event: meta"
+            )
+            assert streamed.text.index("event: message") < streamed.text.index(
                 "event: meta"
             )
 

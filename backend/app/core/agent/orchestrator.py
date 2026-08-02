@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.core.agent.contracts import AgentResponse, Intent, ToolTrace
@@ -118,6 +119,29 @@ class ShoppingAgentOrchestrator:
             if product_id in reasons:
                 product["reason"] = reasons[product_id]
         return intro
+
+    def stream_recommendation_answer(
+        self,
+        session_id: str,
+        message: str,
+        products: list[dict[str, Any]],
+        slots: dict[str, Any],
+        language: str,
+        on_token: Callable[[str], None],
+    ) -> tuple[str, bool]:
+        answer, reasons, streamed = self.reason_generator.generate_stream(
+            user_query=message,
+            products=products,
+            slots=slots,
+            history=self.memory.recent_history(session_id),
+            language=language,
+            on_token=on_token,
+        )
+        for product in products:
+            product_id = str(product["article_id"])
+            if product_id in reasons:
+                product["reason"] = reasons[product_id]
+        return answer, streamed
 
     def handle(
         self,

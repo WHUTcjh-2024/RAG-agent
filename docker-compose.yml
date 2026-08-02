@@ -8,7 +8,7 @@ services:
       AGENT_FACTS_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
       AGENT_CONTEXT_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
     volumes:
-      - ./backend/data:/app/data
+      - ./backend/data/sqlite:/app/data/sqlite
     ports:
       - "18000:18000"
   java-backend:
