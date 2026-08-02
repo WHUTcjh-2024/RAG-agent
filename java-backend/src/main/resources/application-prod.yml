@@ -1,0 +1,30 @@
+server:
+  address: ${SERVER_ADDRESS:0.0.0.0}
+  port: ${SERVER_PORT:8080}
+
+rag:
+  upstream-base-url: ${RAG_UPSTREAM_BASE_URL}
+
+auth:
+  jwt:
+    secret: ${AUTH_JWT_SECRET}
+    access-token-ttl: 2h
+
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    driver-class-name: org.postgresql.Driver
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD}
+  cache:
+    type: redis
+    redis:
+      time-to-live: 5m
+  jpa:
+    hibernate:
+      ddl-auto: validate

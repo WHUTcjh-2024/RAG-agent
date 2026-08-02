@@ -1,5 +1,6 @@
 package com.atelier.gateway.order;
 
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -9,7 +10,7 @@ public final class OrderResponses {
     private OrderResponses() {
     }
 
-    public record OrderListView(List<OrderSummaryView> orders) {
+    public record OrderListView(List<OrderSummaryView> orders) implements Serializable {
     }
 
     public record OrderSummaryView(
@@ -18,7 +19,7 @@ public final class OrderResponses {
         BigDecimal totalAmount,
         Instant createdAt,
         Instant updatedAt
-    ) {
+    ) implements Serializable {
         public static OrderSummaryView from(Order order) {
             return new OrderSummaryView(
                 order.getId(),

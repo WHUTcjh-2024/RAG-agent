@@ -16,21 +16,15 @@ agent:
 spring:
   application:
     name: atelier-java-backend
-  datasource:
-    url: jdbc:h2:file:./data/atelier-java;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
-    driver-class-name: org.h2.Driver
-    username: atelier
-    password: atelier
+  profiles:
+    default: local
   jpa:
-    hibernate:
-      ddl-auto: validate
     open-in-view: false
-    properties:
-      hibernate:
-        format_sql: true
   flyway:
     enabled: true
     locations: classpath:db/migration
+  cache:
+    cache-names: orderLists
   cloud:
     gateway:
       httpclient:
@@ -53,7 +47,16 @@ spring:
             - Path=/media/**
 
 management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
   endpoints:
     web:
       exposure:
-        include: health,metrics
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never

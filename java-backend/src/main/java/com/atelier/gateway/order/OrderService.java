@@ -22,19 +22,22 @@ public class OrderService {
     private final OrderItemRepository orderItemRepository;
     private final UserRepository userRepository;
     private final JwtTokenService jwtTokenService;
+    private final OrderListCache orderListCache;
 
     public OrderService(
         CartItemRepository cartItemRepository,
         OrderRepository orderRepository,
         OrderItemRepository orderItemRepository,
         UserRepository userRepository,
-        JwtTokenService jwtTokenService
+        JwtTokenService jwtTokenService,
+        OrderListCache orderListCache
     ) {
         this.cartItemRepository = cartItemRepository;
         this.orderRepository = orderRepository;
         this.orderItemRepository = orderItemRepository;
         this.userRepository = userRepository;
         this.jwtTokenService = jwtTokenService;
+        this.orderListCache = orderListCache;
     }
 
     @Transactional
@@ -51,9 +54,13 @@ public class OrderService {
     @Transactional(readOnly = true)
     public OrderListView currentOrders(String authorizationHeader) {
         UUID userId = currentUserId(authorizationHeader);
-        return new OrderListView(orderRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
-            .map(OrderSummaryView::from)
-            .toList());
+        return orderListCache.get(userId).orElseGet(() -> {
+            OrderListView orders = new OrderListView(orderRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .map(OrderSummaryView::from)
+                .toList());
+            orderListCache.put(userId, orders);
+            return orders;
+        });
     }
 
     @Transactional(readOnly = true)
@@ -67,7 +74,9 @@ public class OrderService {
         UUID userId = currentUserId(authorizationHeader);
         Order order = orderForUser(orderId, userId);
         order.cancel();
-        return detailView(orderRepository.save(order));
+        OrderDetailView detail = detailView(orderRepository.save(order));
+        orderListCache.evictAfterCommit(userId);
+        return detail;
     }
 
     private OrderDetailView createNewOrder(UUID userId, String idempotencyKey) {
@@ -85,6 +94,7 @@ public class OrderService {
             .toList();
         orderItemRepository.saveAll(orderItems);
         cartItemRepository.deleteAll(selectedItems);
+        orderListCache.evictAfterCommit(userId);
         return OrderDetailView.from(order, orderItems);
     }
 
