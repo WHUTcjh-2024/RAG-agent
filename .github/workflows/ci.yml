@@ -45,6 +45,13 @@ jobs:
         working-directory: java-backend
   real-e2e:
     runs-on: ubuntu-latest
+    env:
+      AGENT_INTERNAL_TOKEN: atelier-real-e2e-ci-token
+      AUTH_JWT_SECRET: atelier-real-e2e-ci-jwt-secret-at-least-32-bytes
+      POSTGRES_DB: atelier_e2e
+      POSTGRES_USER: atelier_e2e
+      POSTGRES_PASSWORD: atelier-real-e2e-postgres-password
+      REDIS_PASSWORD: atelier-real-e2e-redis-password
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
