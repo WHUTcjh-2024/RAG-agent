@@ -31,7 +31,9 @@ public class TrustedAgentContextFilter implements WebFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getURI().getPath();
-        if (!path.equals("/api/chat") && !path.equals("/api/chat/stream")) {
+        if (!path.equals("/api/chat") && !path.equals("/api/chat/stream")
+            && !path.startsWith("/api/actions/") && !path.startsWith("/api/agent/")
+            && !path.startsWith("/api/tasks/")) {
             return chain.filter(exchange);
         }
         ServerHttpRequest.Builder request = exchange.getRequest().mutate();

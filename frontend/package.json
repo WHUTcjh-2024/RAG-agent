@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run src",
     "test:e2e": "playwright test",
+    "test:e2e:real": "playwright test -c playwright.real.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

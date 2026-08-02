@@ -15,6 +15,8 @@ jobs:
           cache: pip
       - run: pip install -r backend/requirements.txt
       - run: python -m pytest backend/tests -q
+      - run: python backend/scripts/build_text_index.py --backend hashing --index_dir /tmp/agent-evaluation-index
+      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_ndcg_at_10 0.64
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -41,3 +43,39 @@ jobs:
           cache: maven
       - run: mvn -B test
         working-directory: java-backend
+  real-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: docker compose up --build -d
+        env:
+          AGENT_INTERNAL_TOKEN: atelier-real-e2e-ci-token
+      - name: Wait for the full stack
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:18000/health >/dev/null \
+              && curl --fail --silent http://127.0.0.1:8080/actuator/health >/dev/null \
+              && curl --fail --silent http://127.0.0.1:5173/ >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+        env:
+          AGENT_INTERNAL_TOKEN: atelier-real-e2e-ci-token
+      - run: npm run test:e2e:real
+        working-directory: frontend
+      - if: always()
+        run: docker compose down --volumes
+        env:
+          AGENT_INTERNAL_TOKEN: atelier-real-e2e-ci-token

@@ -81,10 +81,34 @@ class AgentMemoryStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS agent_actions (
+                    action_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    cart_item_id TEXT,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_task_commits (
                     task_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     committed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_task_controls (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -161,7 +185,76 @@ class AgentMemoryStore:
                 cursor = connection.execute(
                     "DELETE FROM agent_sessions WHERE updated_at < ?", (cutoff_value,)
                 )
+                connection.execute(
+                    "DELETE FROM agent_task_controls WHERE updated_at < ?", (cutoff_value,)
+                )
+                connection.execute(
+                    "DELETE FROM agent_task_commits WHERE session_id NOT IN (SELECT session_id FROM agent_sessions)"
+                )
             return max(cursor.rowcount, 0)
+
+    def register_task(self, task_id: str, session_id: str, user_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_task_controls (task_id, session_id, user_id)
+                VALUES (?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP
+                """,
+                (task_id, validate_session_id(session_id), user_id),
+            )
+
+    def cancel_task(self, task_id: str, session_id: str, user_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_task_controls
+                SET status='cancelled', updated_at=CURRENT_TIMESTAMP
+                WHERE task_id=? AND session_id=? AND user_id=? AND status='running'
+                """,
+                (task_id, validate_session_id(session_id), user_id),
+            )
+            return cursor.rowcount == 1
+
+    def task_cancelled(self, task_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM agent_task_controls WHERE task_id=?", (task_id,)
+            ).fetchone()
+        return bool(row and row["status"] == "cancelled")
+
+    def task_context(self, task_id: str) -> tuple[str, str] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT session_id, user_id FROM agent_task_controls WHERE task_id=?", (task_id,)
+            ).fetchone()
+        return (str(row["session_id"]), str(row["user_id"])) if row else None
+
+    def complete_task(self, task_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE agent_task_controls SET status='completed', updated_at=CURRENT_TIMESTAMP
+                WHERE task_id=? AND status='running'
+                """,
+                (task_id,),
+            )
+
+    def delete_session(self, session_id: str) -> None:
+        session_id = validate_session_id(session_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM agent_sessions WHERE session_id=?", (session_id,))
+            connection.execute("DELETE FROM agent_task_controls WHERE session_id=?", (session_id,))
+            connection.execute("DELETE FROM agent_task_commits WHERE session_id=?", (session_id,))
+            self._sessions.pop(session_id, None)
+
+    def task_ids_for_session(self, session_id: str) -> list[str]:
+        session_id = validate_session_id(session_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT task_id FROM agent_task_controls WHERE session_id=?", (session_id,)
+            ).fetchall()
+        return [str(row["task_id"]) for row in rows]
 
     def get(self, session_id: str) -> SessionState:
         session_id = validate_session_id(session_id)
@@ -281,3 +374,27 @@ class AgentMemoryStore:
             state.updated_at = datetime.now(timezone.utc)
             self._sessions[session_id] = state
             return True
+
+    def save_pending_action(self, action: dict[str, Any], user_id: str, task_id: str) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_actions (action_id, task_id, user_id, status, expires_at)
+                VALUES (?, ?, ?, 'pending', ?)
+                ON CONFLICT(action_id) DO NOTHING
+                """,
+                (action["action_id"], task_id, user_id, action["expires_at"]),
+            )
+
+    def complete_action(self, action_id: str, user_id: str, cart_item_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_actions
+                SET status='completed', cart_item_id=?, updated_at=CURRENT_TIMESTAMP
+                WHERE action_id=? AND user_id=? AND status='pending'
+                  AND expires_at >= CURRENT_TIMESTAMP
+                """,
+                (cart_item_id, action_id, user_id),
+            )
+            return cursor.rowcount == 1

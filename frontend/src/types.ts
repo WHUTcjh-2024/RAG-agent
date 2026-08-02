@@ -88,6 +88,50 @@ export interface CartItem {
   updatedAt: string;
 }
 
+export interface PendingCartAction {
+  action_id: string;
+  action_type: "ADD_CART_ITEM";
+  summary: string;
+  expires_at: string;
+  confirmation_token: string;
+  product: Pick<Product, "article_id" | "prod_name" | "price" | "image_url">;
+}
+
+export interface WardrobeItem {
+  id: string;
+  sourceProductId?: string | null;
+  name: string;
+  category: string;
+  color?: string | null;
+  imageUrl?: string | null;
+}
+
+export interface WardrobeSnapshot {
+  version: number;
+  items: WardrobeItem[];
+  observedAt: string;
+}
+
+export interface WardrobePlanItem {
+  item_id: string;
+  source: "WARDROBE" | "CATALOG";
+  name: string;
+  category: string;
+  image_url?: string | null;
+  price?: number | null;
+  locked: boolean;
+}
+
+export interface WardrobePlan {
+  plan_id: string;
+  wardrobe_version: number;
+  outfits: { outfit_id: string; name: string; items: WardrobePlanItem[]; complete: boolean }[];
+  missing_categories: string[];
+  new_item_total: number;
+  fallback?: string | null;
+  replan_scope?: { outfit_id: string; action: string };
+}
+
 export type Slots = Record<string, string | number | string[]>;
 
 export interface ProductPage {

@@ -42,6 +42,7 @@ def create_image_fixture(root: Path) -> tuple[Path, Path]:
             "product_type_name": category,
             "colour_group_name": colour,
             "image_path": f"images/000/{article_id}.jpg",
+            "price": "19.90",
         }
         for article_id, name, category, colour in (
             ("0000000001", "Red Shirt", "Shirt", "Red"),

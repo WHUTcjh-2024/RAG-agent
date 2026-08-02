@@ -1,16 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GitCompareArrows } from "lucide-react";
 import {
   addCart,
+  cancelAgentTask,
   clearCart,
   compareProducts,
+  confirmAgentCartAction,
   fetchCart,
   fetchCurrentUser,
   fetchFacets,
   fetchProduct,
   fetchProducts,
+  fetchWardrobe,
   fetchSession,
   login,
+  recordAgentActionCompletion,
+  recordWardrobeFeedback,
+  replanWardrobe,
   register,
   removeCart,
   streamChat
@@ -39,6 +45,8 @@ export default function App() {
   const [total, setTotal] = useState(0);
   const [detail, setDetail] = useState<Product | null>(null);
   const [loading, setLoading] = useState(false);
+  const abortController = useRef<AbortController | null>(null);
+  const activeTaskId = useRef<string | null>(null);
 
   useEffect(() => {
     fetchFacets().then(setFacets).catch((error) => setNotice(error.message));
@@ -54,6 +62,9 @@ export default function App() {
         store.setAuth(store.accessToken, user);
         store.setCart(cart);
       }).catch(() => store.setAuth("", null));
+      fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => {
+        // Wardrobe is additive; unavailable Java data must not invalidate login or cart state.
+      });
     }
   }, []);
 
@@ -82,22 +93,73 @@ export default function App() {
     store.addMessage({ id: crypto.randomUUID(), role: "user", content: message || t("similarImage"), imagePreview: preview || undefined });
     store.setStreaming(true);
     setNotice("");
+    activeTaskId.current = null;
+    abortController.current = new AbortController();
     try {
       await streamChat(message, store.sessionId, image, language, {
-        onMeta: ({ slots }) => store.setSlots(slots),
+        onMeta: ({ slots, task_id }) => { activeTaskId.current = task_id; store.setSlots(slots); },
+        onTaskId: (taskId) => { activeTaskId.current = taskId; },
         onTool: store.addTrace,
         onProducts: store.setProducts,
         onComparison: store.setComparison,
         onDecision: store.setDecision,
+        onConfirmRequired: store.setPendingAction,
+        onWardrobePlan: store.setWardrobePlan,
         onMessage: store.appendAssistant,
         onError: () => undefined
-      }, store.accessToken);
+      }, store.accessToken, abortController.current.signal);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       const text = error instanceof Error ? error.message : t("requestFailed");
       store.appendAssistant(`${t("unable")}${text}`);
       setNotice(text);
     } finally {
+      abortController.current = null;
+      activeTaskId.current = null;
       store.setStreaming(false);
+    }
+  };
+
+  const cancelChat = () => {
+    const taskId = activeTaskId.current;
+    abortController.current?.abort();
+    if (taskId) {
+      cancelAgentTask(store.accessToken, taskId, store.sessionId).catch(() => {
+        // Client cancellation is immediate; server cancellation is best effort after network loss.
+      });
+    }
+  };
+
+  const confirmPendingAction = async () => {
+    if (!store.accessToken || !store.pendingAction) return;
+    try {
+      const item = await confirmAgentCartAction(store.accessToken, store.pendingAction);
+      await recordAgentActionCompletion(store.accessToken, store.pendingAction.action_id, item.id);
+      store.setCart(await fetchCart(store.accessToken));
+      store.setPendingAction(null);
+      setNotice(t("added"));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("addFailed"));
+    }
+  };
+
+  const editWardrobePlan = async (operation: Record<string, unknown>) => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try {
+      store.setWardrobePlan(await replanWardrobe(store.accessToken, store.wardrobePlan.plan_id, store.wardrobePlan, operation));
+      store.setWardrobe(await fetchWardrobe(store.accessToken));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("requestFailed"));
+    }
+  };
+
+  const acceptWardrobePlan = async () => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try {
+      await recordWardrobeFeedback(store.accessToken, { planRef: store.wardrobePlan.plan_id, outcome: "ADOPTED" });
+      setNotice("已记录本次穿搭采纳");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("requestFailed"));
     }
   };
 
@@ -205,7 +267,7 @@ export default function App() {
       <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
       <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
       <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
-      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} onSubmit={submit} />
+      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} pendingAction={store.pendingAction} wardrobe={store.wardrobe} wardrobePlan={store.wardrobePlan} products={store.products} onPlanEdit={editWardrobePlan} onPlanAccept={acceptWardrobePlan} onConfirm={confirmPendingAction} onSubmit={submit} onCancel={cancelChat} />
     </div>
   );
 }

@@ -13,6 +13,7 @@ from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
+from pydantic import BaseModel, Field
 from fastapi.responses import Response, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 
@@ -25,6 +26,7 @@ from app.core.agent.workflow import (
     validate_task_id,
     workflow_enabled,
 )
+from app.core.agent.wardrobe import WardrobePlanner
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
@@ -37,6 +39,20 @@ _workflow_instance: RecoverableShoppingAgentWorkflow | None = None
 _workflow_orchestrator: ShoppingAgentOrchestrator | None = None
 _workflow_path: str | None = None
 _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
+
+
+class ActionCompletionRequest(BaseModel):
+    cart_item_id: str = Field(min_length=1, max_length=100)
+
+
+class WardrobePlanEditRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=100)
+    plan: dict
+    operation: dict
+
+
+class TaskCancellationRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100)
 
 
 @lru_cache(maxsize=1)
@@ -222,6 +238,7 @@ async def chat_stream(
     resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
 
     async def events():
+        answer_streamed = False
         try:
             yield sse(
                 SSEEvent.STATUS,
@@ -266,6 +283,9 @@ async def chat_stream(
                         item = await queue.get()
                         if item["type"] == "node":
                             yield sse(SSEEvent.NODE, item["data"])
+                        elif item["type"] == "token":
+                            answer_streamed = True
+                            yield sse(SSEEvent.MESSAGE, {"delta": item["data"]["token"]})
                         elif item["type"] == "result":
                             response = item["response"]
                         elif item["type"] == "error":
@@ -318,13 +338,18 @@ async def chat_stream(
                 for evidence in response["decision"]["evidence"]:
                     yield sse(SSEEvent.EVIDENCE, {"item": evidence})
                 yield sse(SSEEvent.DECISION, {"card": response["decision"]})
-            answer = response["answer"]
-            for start in range(0, len(answer), 24):
-                yield sse(
-                    SSEEvent.MESSAGE,
-                    {"delta": answer[start : start + 24]},
-                )
-                await asyncio.sleep(0)
+            if response.get("pending_action"):
+                yield sse(SSEEvent.CONFIRM_REQUIRED, response["pending_action"])
+            if response.get("wardrobe_plan"):
+                yield sse(SSEEvent.WARDROBE_PLAN, {"plan": response["wardrobe_plan"]})
+            if not answer_streamed:
+                answer = response["answer"]
+                for start in range(0, len(answer), 24):
+                    yield sse(
+                        SSEEvent.MESSAGE,
+                        {"delta": answer[start : start + 24]},
+                    )
+                    await asyncio.sleep(0)
             yield sse(
                 SSEEvent.DONE,
                 {
@@ -344,4 +369,61 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
             "X-Agent-Task-Id": actual_task_id,
         },
+    )
+
+
+@router.post("/actions/{action_id}/completed")
+async def complete_action(
+    action_id: str,
+    payload: ActionCompletionRequest,
+    request: Request,
+) -> dict[str, bool]:
+    user_id = trusted_user_id_from(request)
+    if not user_id:
+        raise invalid_input("Trusted user context is required.", status_code=401)
+    completed = get_memory().complete_action(action_id, user_id, payload.cart_item_id)
+    if not completed:
+        raise invalid_input("Action is invalid, expired, or already completed.", status_code=409)
+    return {"ok": True}
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    payload: TaskCancellationRequest,
+    request: Request,
+) -> dict[str, bool]:
+    orchestrator = get_orchestrator()
+    if not workflow_enabled() or not isinstance(orchestrator, ShoppingAgentOrchestrator):
+        return {"ok": False}
+    cancelled = get_workflow(orchestrator).cancel(
+        task_id=task_id,
+        session_id=payload.session_id,
+        trusted_user_id=trusted_user_id_from(request),
+    )
+    return {"ok": cancelled}
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str) -> dict[str, bool]:
+    task_ids = get_memory().task_ids_for_session(session_id)
+    if task_ids and _workflow_instance is not None:
+        _workflow_instance.purge_tasks(task_ids)
+    get_memory().delete_session(session_id)
+    return {"ok": True}
+
+
+@router.post("/agent/wardrobe/plans/replan")
+async def replan_wardrobe(
+    payload: WardrobePlanEditRequest,
+    request: Request,
+) -> dict:
+    user_id = trusted_user_id_from(request)
+    if not user_id:
+        raise invalid_input("Trusted user context is required.", status_code=401)
+    snapshot = get_orchestrator().wardrobe_provider.get(user_id=user_id)
+    return WardrobePlanner().replan(
+        plan=payload.plan,
+        snapshot=snapshot,
+        operation=payload.operation,
     )

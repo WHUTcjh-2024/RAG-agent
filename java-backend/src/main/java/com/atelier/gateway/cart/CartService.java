@@ -3,6 +3,8 @@ package com.atelier.gateway.cart;
 import com.atelier.gateway.cart.CartResponses.CartItemView;
 import com.atelier.gateway.cart.CartResponses.CartView;
 import com.atelier.gateway.common.ApiException;
+import com.atelier.gateway.decision.ProductSkuFact;
+import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.security.JwtTokenService;
 import com.atelier.gateway.user.UserRepository;
 import java.math.BigDecimal;
@@ -16,20 +18,73 @@ public class CartService {
     private final CartItemRepository cartItemRepository;
     private final UserRepository userRepository;
     private final JwtTokenService jwtTokenService;
+    private final AgentActionTokenService actionTokenService;
+    private final AgentCartActionCommitRepository actionCommitRepository;
+    private final ProductSkuFactRepository productFactRepository;
 
     public CartService(
         CartItemRepository cartItemRepository,
         UserRepository userRepository,
-        JwtTokenService jwtTokenService
+        JwtTokenService jwtTokenService,
+        AgentActionTokenService actionTokenService,
+        AgentCartActionCommitRepository actionCommitRepository,
+        ProductSkuFactRepository productFactRepository
     ) {
         this.cartItemRepository = cartItemRepository;
         this.userRepository = userRepository;
         this.jwtTokenService = jwtTokenService;
+        this.actionTokenService = actionTokenService;
+        this.actionCommitRepository = actionCommitRepository;
+        this.productFactRepository = productFactRepository;
     }
 
     @Transactional
     public CartItemView addItem(String authorizationHeader, AddCartItemRequest request) {
         UUID userId = currentUserId(authorizationHeader);
+        return CartItemView.from(addItem(userId, request));
+    }
+
+    @Transactional
+    public CartItemView confirmAgentAction(
+        String authorizationHeader, AgentCartConfirmationRequest request
+    ) {
+        UUID userId = currentUserId(authorizationHeader);
+        AgentActionTokenService.AgentCartAction action = actionTokenService.verify(request.confirmationToken());
+        if (!userId.toString().equals(action.user_id())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Agent confirmation does not belong to this user");
+        }
+        AgentCartActionCommit prior = actionCommitRepository.findById(action.action_id()).orElse(null);
+        if (prior != null) {
+            if (!prior.getUserId().equals(userId)) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "Agent confirmation does not belong to this user");
+            }
+            if (prior.getCartItemId() == null) {
+                throw new ApiException(HttpStatus.CONFLICT, "Confirmed cart item is no longer available");
+            }
+            CartItem priorItem = cartItemRepository.findById(prior.getCartItemId())
+                .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "Confirmed cart item is no longer available"));
+            return CartItemView.from(priorItem);
+        }
+        ProductSkuFact fact = productFactRepository.findById(action.product_id())
+            .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "Current product facts are unavailable"));
+        if (!Boolean.TRUE.equals(fact.getInStock())) {
+            throw new ApiException(HttpStatus.CONFLICT, "Product is no longer in stock");
+        }
+        BigDecimal expectedPrice = new BigDecimal(action.expected_price());
+        if (fact.getPrice() == null || fact.getPrice().compareTo(expectedPrice) != 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "Product price changed; request a new confirmation");
+        }
+        CartItem item = addItem(userId, new AddCartItemRequest(
+            action.product_id(), action.product_name(), action.product_image_url(),
+            fact.getPrice(), action.quantity(), true
+        ));
+        actionCommitRepository.save(AgentCartActionCommit.create(
+            action.action_id(), userId, action.product_id(), item.getId()
+        ));
+        return CartItemView.from(item);
+    }
+
+    private CartItem addItem(UUID userId, AddCartItemRequest request) {
         String productId = requireText(request.productId(), "Product id is required");
         String productName = requireText(request.productName(), "Product name is required");
         BigDecimal unitPrice = requireUnitPrice(request.unitPrice());
@@ -51,7 +106,7 @@ public class CartService {
                 selected == null || selected
             ));
 
-        return CartItemView.from(cartItemRepository.save(item));
+        return cartItemRepository.save(item);
     }
 
     @Transactional(readOnly = true)

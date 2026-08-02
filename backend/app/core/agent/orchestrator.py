@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.core.agent.contracts import AgentResponse, Intent, ToolTrace
@@ -15,6 +16,7 @@ from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.agent.tool_registry import CommerceToolset, ToolRegistry
+from app.core.agent.wardrobe import JavaWardrobeProvider, WardrobeProvider
 from app.core.llm import GroundedRecommendationGenerator
 from app.core.request_id import normalize_request_id
 
@@ -31,6 +33,7 @@ class ShoppingAgentOrchestrator:
         memory: AgentMemoryStore | None = None,
         reason_generator: GroundedRecommendationGenerator | None = None,
         decision_facts_provider: DecisionFactsProvider | None = None,
+        wardrobe_provider: WardrobeProvider | None = None,
     ) -> None:
         self.memory = memory or AgentMemoryStore()
         self.slot_extractor = SlotExtractor()
@@ -45,6 +48,7 @@ class ShoppingAgentOrchestrator:
         self.planner = AgentPlanner(self.registry.tools)
         self.decision_facts_provider = decision_facts_provider or JavaDecisionFactsProvider()
         self.decision_card_builder = DecisionCardBuilder()
+        self.wardrobe_provider = wardrobe_provider or JavaWardrobeProvider()
 
     @staticmethod
     def classify_intent(message: str, has_image: bool) -> Intent:
@@ -55,6 +59,10 @@ class ShoppingAgentOrchestrator:
             "checkout", "place order", "cart", "bag",
         )):
             return Intent.CART_HANDOFF
+        if any(term in folded for term in (
+            "wardrobe", "outfit", "衣橱", "穿搭", "套搭", "套衣服",
+        )):
+            return Intent.WARDROBE_PLAN
         if any(term in folded for term in ("对比", "比较", "哪个好", "哪件更", "compare", "which is better")):
             return Intent.COMPARE
         if has_image and text:
@@ -111,6 +119,29 @@ class ShoppingAgentOrchestrator:
             if product_id in reasons:
                 product["reason"] = reasons[product_id]
         return intro
+
+    def stream_recommendation_answer(
+        self,
+        session_id: str,
+        message: str,
+        products: list[dict[str, Any]],
+        slots: dict[str, Any],
+        language: str,
+        on_token: Callable[[str], None],
+    ) -> tuple[str, bool]:
+        answer, reasons, streamed = self.reason_generator.generate_stream(
+            user_query=message,
+            products=products,
+            slots=slots,
+            history=self.memory.recent_history(session_id),
+            language=language,
+            on_token=on_token,
+        )
+        for product in products:
+            product_id = str(product["article_id"])
+            if product_id in reasons:
+                product["reason"] = reasons[product_id]
+        return answer, streamed
 
     def handle(
         self,

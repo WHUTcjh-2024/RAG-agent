@@ -17,6 +17,17 @@ TOOL_TO_INTENT = {
     "compare_products": Intent.COMPARE,
 }
 logger = logging.getLogger(__name__)
+PROMPT_INJECTION_MARKERS = (
+    "ignore previous instructions",
+    "ignore all instructions",
+    "system prompt",
+    "developer message",
+    "call a tool",
+    "忽略之前的指令",
+    "忽略所有指令",
+    "系统提示词",
+    "调用工具",
+)
 
 
 class AgentPlanner:
@@ -51,7 +62,13 @@ class AgentPlanner:
         fallback: Callable[[], Intent],
     ) -> Intent:
         fallback_intent = fallback()
-        if fallback_intent in {Intent.CART_HANDOFF, Intent.COMPARE}:
+        if any(marker in message.casefold() for marker in PROMPT_INJECTION_MARKERS):
+            logger.warning(
+                "agent_prompt_injection_blocked request_id=%s stage=plan_tools",
+                current_request_id(),
+            )
+            return fallback_intent
+        if fallback_intent in {Intent.CART_HANDOFF, Intent.COMPARE, Intent.WARDROBE_PLAN}:
             return fallback_intent
         if self.bound is None:
             return fallback_intent

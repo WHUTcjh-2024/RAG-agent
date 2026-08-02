@@ -34,6 +34,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report", type=Path, default=BACKEND_DIR / "evaluation" / "report.json"
     )
+    parser.add_argument("--minimum_recall_at_5", type=float, default=0.90)
+    parser.add_argument("--minimum_recall_at_10", type=float, default=0.85)
+    parser.add_argument("--minimum_ndcg_at_10", type=float, default=0.65)
+    parser.add_argument("--minimum_intent_accuracy", type=float, default=0.90)
+    parser.add_argument("--minimum_slot_accuracy", type=float, default=0.90)
     return parser.parse_args()
 
 
@@ -134,11 +139,11 @@ def main() -> int:
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     thresholds_ok = (
-        report["retrieval"]["recall_at_5"] >= 0.90
-        and report["retrieval"]["recall_at_10"] >= 0.85
-        and report["retrieval"]["ndcg_at_10"] >= 0.65
-        and report["intent_accuracy"] >= 0.90
-        and report["slot_accuracy"] >= 0.90
+        report["retrieval"]["recall_at_5"] >= args.minimum_recall_at_5
+        and report["retrieval"]["recall_at_10"] >= args.minimum_recall_at_10
+        and report["retrieval"]["ndcg_at_10"] >= args.minimum_ndcg_at_10
+        and report["intent_accuracy"] >= args.minimum_intent_accuracy
+        and report["slot_accuracy"] >= args.minimum_slot_accuracy
     )
     return 0 if thresholds_ok else 1
 

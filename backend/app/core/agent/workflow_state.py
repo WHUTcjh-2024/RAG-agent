@@ -40,10 +40,13 @@ class AgentState(TypedDict, total=False):
     tool_trace: list[dict[str, Any]]
     node_trace: list[dict[str, Any]]
     answer: str
+    answer_streamed: bool
     status: str
     response: dict[str, Any]
     decision_product_id: str | None
     decision: dict[str, Any] | None
+    wardrobe_snapshot: dict[str, Any] | None
+    wardrobe_plan: dict[str, Any] | None
 
 
 def validate_task_id(task_id: str) -> str:

@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User } from "../types";
+import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
@@ -9,7 +9,9 @@ const STREAM_EVENT = {
   COMPARISON: "comparison",
   MESSAGE: "message",
   ERROR: "error",
-  DECISION: "decision"
+  DECISION: "decision",
+  CONFIRM_REQUIRED: "confirm_required",
+  WARDROBE_PLAN: "wardrobe_plan"
 } as const;
 
 export class ApiClientError extends Error {
@@ -95,11 +97,14 @@ export async function fetchFacets(): Promise<ProductFacets> {
 }
 
 type StreamHandlers = {
-  onMeta: (payload: { request_id?: string; session_id: string; intent: string; slots: Slots }) => void;
+  onMeta: (payload: { request_id?: string; session_id: string; task_id: string; intent: string; slots: Slots }) => void;
+  onTaskId?: (taskId: string) => void;
   onTool: (payload: ToolTrace) => void;
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
   onDecision: (card: DecisionCard) => void;
+  onConfirmRequired: (action: PendingCartAction) => void;
+  onWardrobePlan: (plan: WardrobePlan) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
 };
@@ -110,7 +115,8 @@ export async function streamChat(
   image: File | null,
   language: "zh" | "en",
   handlers: StreamHandlers,
-  accessToken = ""
+  accessToken = "",
+  signal?: AbortSignal
 ): Promise<void> {
   const form = new FormData();
   form.append("message", message);
@@ -122,9 +128,12 @@ export async function streamChat(
     await fetch("/api/chat/stream", {
       method: "POST",
       headers: { [REQUEST_ID_HEADER]: requestId, ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-      body: form
+      body: form,
+      signal
     })
   );
+  const taskId = response.headers.get("X-Agent-Task-Id");
+  if (taskId) handlers.onTaskId?.(taskId);
   if (!response.body) throw new Error("浏览器不支持流式响应");
 
   const reader = response.body.getReader();
@@ -158,6 +167,12 @@ export async function streamChat(
           break;
         case STREAM_EVENT.DECISION:
           handlers.onDecision(payload.card);
+          break;
+        case STREAM_EVENT.CONFIRM_REQUIRED:
+          handlers.onConfirmRequired(payload);
+          break;
+        case STREAM_EVENT.WARDROBE_PLAN:
+          handlers.onWardrobePlan(payload.plan);
           break;
         case STREAM_EVENT.MESSAGE:
           handlers.onMessage(payload.delta || "");
@@ -196,6 +211,15 @@ export const fetchSession = (sessionId: string) =>
   postJson<{ session_id: string; slots: Slots; history: { role: "user" | "assistant"; content: string }[] }>("/api/session", {
     session_id: sessionId
   });
+
+export async function cancelAgentTask(token: string, taskId: string, sessionId: string): Promise<boolean> {
+  const response = await ensureOk(await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId })
+  }));
+  return (await response.json()).ok === true;
+}
 
 function authorized(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}` };
@@ -239,6 +263,23 @@ export async function addCart(token: string, product: Product): Promise<CartItem
   return response.json();
 }
 
+export async function confirmAgentCartAction(token: string, action: PendingCartAction): Promise<CartItem> {
+  const response = await ensureOk(await fetch("/api/cart/agent-actions/confirm", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmationToken: action.confirmation_token })
+  }));
+  return response.json();
+}
+
+export async function recordAgentActionCompletion(token: string, actionId: string, cartItemId: string): Promise<void> {
+  await ensureOk(await fetch(`/api/actions/${encodeURIComponent(actionId)}/completed`, {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ cart_item_id: cartItemId })
+  }));
+}
+
 export async function removeCart(token: string, itemId: string): Promise<void> {
   await ensureOk(await fetch(`/api/cart/items/${encodeURIComponent(itemId)}`, {
     method: "DELETE",
@@ -250,5 +291,34 @@ export async function clearCart(token: string): Promise<void> {
   await ensureOk(await fetch("/api/cart", {
     method: "DELETE",
     headers: authorized(token)
+  }));
+}
+
+export async function fetchWardrobe(token: string): Promise<WardrobeSnapshot> {
+  return (await ensureOk(await fetch("/api/wardrobe", { headers: authorized(token) }))).json();
+}
+
+export async function replanWardrobe(
+  token: string,
+  taskId: string,
+  plan: WardrobePlan,
+  operation: Record<string, unknown>
+): Promise<WardrobePlan> {
+  const response = await ensureOk(await fetch("/api/agent/wardrobe/plans/replan", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ task_id: taskId, plan, operation })
+  }));
+  return response.json();
+}
+
+export async function recordWardrobeFeedback(
+  token: string,
+  feedback: { taskId?: string; planRef?: string; itemRef?: string; outcome: "ADOPTED" | "PURCHASED" | "KEPT" | "RETURNED"; fitFeedback?: "TOO_SMALL" | "TOO_LARGE" | "GOOD_FIT" }
+): Promise<void> {
+  await ensureOk(await fetch("/api/wardrobe/feedback", {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify(feedback)
   }));
 }

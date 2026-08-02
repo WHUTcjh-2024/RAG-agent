@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import copyfile
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +29,7 @@ from app.core.llm import GroundedRecommendationGenerator
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
+from app.core.agent.wardrobe import WardrobeItem, WardrobeSnapshot
 from app.main import app
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
@@ -112,6 +115,37 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
     assert {"checkpoints", "writes"} <= tables
 
 
+class StreamingRecommendationLLM:
+    def stream(self, _messages):
+        yield SimpleNamespace(content="real-time ")
+        yield SimpleNamespace(content="answer")
+
+
+def test_workflow_emits_provider_tokens_before_final_result(tmp_path: Path) -> None:
+    generator = GroundedRecommendationGenerator(
+        chain=None,
+        streaming_llm=StreamingRecommendationLLM(),
+    )
+    workflow, _ = create_workflow(tmp_path, reason_generator=generator)
+    try:
+        events = list(
+            workflow.stream(
+                task_id="provider-token-stream",
+                message="recommend a red shirt",
+                session_id="stream-session",
+                request_id="stream-request",
+            )
+        )
+    finally:
+        workflow.close()
+
+    tokens = [event["data"]["token"] for event in events if event["type"] == "token"]
+    result_index = next(index for index, event in enumerate(events) if event["type"] == "result")
+    assert tokens == ["real-time ", "answer"]
+    assert all(index < result_index for index, event in enumerate(events) if event["type"] == "token")
+    assert events[result_index]["response"]["answer"] == "real-time answer"
+
+
 def test_cart_route_runs_confirmation_node_without_python_cart_tool(
     tmp_path: Path,
 ) -> None:
@@ -129,12 +163,68 @@ def test_cart_route_runs_confirmation_node_without_python_cart_tool(
 
     assert "wait_for_confirmation" in state["executed_nodes"]
     assert response.intent == "cart_handoff"
-    assert "Java" in response.answer
+    assert "登录" in response.answer
     assert response.tool_trace == []
     assert workflow.route_after_answer({"pending_action": {"type": "handoff"}}) == (
         "wait_for_confirmation"
     )
     assert workflow.route_after_answer({"pending_action": None}) == "complete"
+
+
+def test_authenticated_cart_route_returns_confirmation_without_writing_cart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_ACTION_SECRET", "workflow-action-secret")
+    workflow, orchestrator = create_workflow(tmp_path)
+    orchestrator.memory.set_last_results("cart-session", ["0000000001"])
+    try:
+        response = workflow.invoke(
+            task_id="authenticated-cart-route",
+            message="把第1件加入购物车",
+            session_id="cart-session",
+            request_id="cart-request",
+            trusted_user_id="trusted-user",
+        )
+    finally:
+        workflow.close()
+
+    assert response.pending_action is not None
+    assert response.pending_action["action_type"] == "ADD_CART_ITEM"
+    assert response.pending_action["product"]["article_id"] == "0000000001"
+    assert response.pending_action["confirmation_token"].count(".") == 1
+    assert response.tool_trace[0].tool == "get_product_detail"
+
+
+def test_wardrobe_task_uses_versioned_context_and_only_searches_missing_categories(
+    tmp_path: Path,
+) -> None:
+    class FixtureWardrobe:
+        def get(self, *, user_id: str) -> WardrobeSnapshot:
+            assert user_id == "trusted-user"
+            return WardrobeSnapshot(
+                version=7,
+                observed_at=datetime.now(timezone.utc),
+                items=[WardrobeItem("shirt-1", None, "White shirt", "Shirt", "White", None)],
+            )
+
+    workflow, orchestrator = create_workflow(tmp_path)
+    orchestrator.wardrobe_provider = FixtureWardrobe()
+    try:
+        response = workflow.invoke(
+            task_id="wardrobe-task",
+            message="Plan 2 outfits from my wardrobe for an interview, budget 200",
+            session_id="wardrobe-session",
+            trusted_user_id="trusted-user",
+        )
+        state = workflow.get_task_state("wardrobe-task")
+    finally:
+        workflow.close()
+
+    assert response.intent.value == "wardrobe_plan"
+    assert response.wardrobe_plan is not None
+    assert response.wardrobe_plan["wardrobe_version"] == 7
+    assert state["context_refs"]["wardrobe_version"] == 7
+    assert response.tool_trace[0].tool == "search_products_by_text"
 
 
 def test_transient_retrieval_error_retries_only_failed_node(tmp_path: Path) -> None:
@@ -371,6 +461,9 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
                 in streamed.text
             )
             assert streamed.text.index("event: node") < streamed.text.index(
+                "event: meta"
+            )
+            assert streamed.text.index("event: message") < streamed.text.index(
                 "event: meta"
             )
 

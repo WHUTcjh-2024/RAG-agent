@@ -54,6 +54,14 @@ STYLE_TERMS = ("简约", "休闲", "正式", "运动", "宽松", "修身", "复�
 SCENARIO_TERMS = ("上课", "通勤", "约会", "运动", "旅行", "面试", "日常", "聚会", "class", "commute", "date", "workout", "travel", "interview", "daily", "party")
 
 
+WEATHER_TERMS = {
+    "雨": "rain", "下雨": "rain", "rain": "rain",
+    "晴": "sunny", "sunny": "sunny",
+    "冷": "cold", "寒": "cold", "cold": "cold",
+    "热": "hot", "炎": "hot", "hot": "hot",
+}
+
+
 class SlotExtractor:
     def extract(self, text: str) -> dict[str, Any]:
         normalized = text.strip()
@@ -80,6 +88,17 @@ class SlotExtractor:
         ) or re.search(r"(\d+(?:\.\d+)?)\s*(?:元|块|数据价)", normalized) or re.search(r"(?:budget|under|max(?:imum)?)\s*\$?\s*(\d+(?:\.\d+)?)", folded)
         if budget_match:
             slots["budget"] = float(budget_match.group(1))
+
+        outfit_match = re.search(r"(?:([1-5])\s*(?:套|sets?|outfits?))|(?:([1-5])\s*(?:days?|天))", normalized, re.I)
+        if outfit_match:
+            slots["outfit_count"] = int(outfit_match.group(1) or outfit_match.group(2))
+        date_match = re.search(r"(?:下周|next week|\d{4}-\d{1,2}-\d{1,2})", normalized, re.I)
+        if date_match:
+            slots["date"] = date_match.group(0)
+        for term, weather in WEATHER_TERMS.items():
+            if term.casefold() in folded:
+                slots["weather"] = weather
+                break
 
         avoid_clauses = [
             match.strip("，。,. ")

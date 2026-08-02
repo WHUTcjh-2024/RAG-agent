@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { CartItem, DecisionCard, Message, Product, Slots, ToolTrace, User } from "../types";
+import type { CartItem, DecisionCard, Message, PendingCartAction, Product, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 
 const sessionId =
   localStorage.getItem("atelier-session") || `web-${crypto.randomUUID()}`;
@@ -19,6 +19,9 @@ type AppState = {
   comparison: Product[];
   streaming: boolean;
   decision: DecisionCard | null;
+  pendingAction: PendingCartAction | null;
+  wardrobe: WardrobeSnapshot | null;
+  wardrobePlan: WardrobePlan | null;
   addMessage: (message: Message) => void;
   setMessages: (messages: Message[]) => void;
   appendAssistant: (delta: string) => void;
@@ -32,6 +35,9 @@ type AppState = {
   clearCompare: () => void;
   setStreaming: (streaming: boolean) => void;
   setDecision: (decision: DecisionCard | null) => void;
+  setPendingAction: (action: PendingCartAction | null) => void;
+  setWardrobe: (wardrobe: WardrobeSnapshot | null) => void;
+  setWardrobePlan: (plan: WardrobePlan | null) => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -47,6 +53,9 @@ export const useAppStore = create<AppState>((set) => ({
   comparison: [],
   streaming: false,
   decision: null,
+  pendingAction: null,
+  wardrobe: null,
+  wardrobePlan: null,
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   setMessages: (messages) => set({ messages }),
   appendAssistant: (delta) =>
@@ -81,5 +90,8 @@ export const useAppStore = create<AppState>((set) => ({
   setComparison: (comparison) => set({ comparison }),
   clearCompare: () => set({ compareIds: [], comparison: [] }),
   setStreaming: (streaming) => set({ streaming }),
-  setDecision: (decision) => set({ decision })
+  setDecision: (decision) => set({ decision }),
+  setPendingAction: (pendingAction) => set({ pendingAction }),
+  setWardrobe: (wardrobe) => set({ wardrobe }),
+  setWardrobePlan: (wardrobePlan) => set({ wardrobePlan })
 }));
