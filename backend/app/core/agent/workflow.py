@@ -337,6 +337,7 @@ class RecoverableShoppingAgentWorkflow:
             "tool_trace": [],
             "node_trace": [],
             "answer": "",
+            "answer_streamed": False,
             "status": "new",
             "decision_product_id": decision_product_id,
             "decision": None,
@@ -475,7 +476,11 @@ class RecoverableShoppingAgentWorkflow:
                     version="v2",
                 ):
                     if part["type"] == "custom":
-                        yield {"type": "node", "data": part["data"]}
+                        data = part["data"]
+                        yield {
+                            "type": "token" if "token" in data else "node",
+                            "data": data,
+                        }
 
             completed = self.graph.get_state(config)
             if completed.values.get("status") != "completed":

@@ -40,6 +40,7 @@ class AgentState(TypedDict, total=False):
     tool_trace: list[dict[str, Any]]
     node_trace: list[dict[str, Any]]
     answer: str
+    answer_streamed: bool
     status: str
     response: dict[str, Any]
     decision_product_id: str | None

@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from app.core.agent.contracts import AgentResponse, Intent, NodeTrace, ToolTrace
+from langgraph.config import get_stream_writer
+
+from app.core.agent.contracts import AgentResponse, ErrorCode, Intent, NodeTrace, ToolTrace
 from app.core.agent.actions import create_cart_confirmation
-from app.core.agent.errors import invalid_input
+from app.core.agent.errors import AgentException, invalid_input
 from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.agent.workflow_state import AgentState, validate_task_id
@@ -359,6 +361,7 @@ class ShoppingAgentWorkflowNodes:
         candidates = [dict(product) for product in state.get("candidate_products", [])]
         pending_action = None
         wardrobe_plan = None
+        answer_streamed = False
 
         if state.get("decision"):
             decision = state["decision"]
@@ -389,12 +392,25 @@ class ShoppingAgentWorkflowNodes:
             Intent.IMAGE_SEARCH,
             Intent.HYBRID_SEARCH,
         }:
-            answer = self.orchestrator._recommendation_answer(
+            writer = get_stream_writer()
+
+            def emit_token(token: str) -> None:
+                if self.orchestrator.memory.task_cancelled(state["task_id"]):
+                    raise AgentException(
+                        ErrorCode.TASK_CANCELLED,
+                        "Task was cancelled.",
+                        status_code=409,
+                        stage="generate_answer",
+                    )
+                writer({"token": token})
+
+            answer, answer_streamed = self.orchestrator.stream_recommendation_answer(
                 state["session_id"],
                 state["message"],
                 candidates,
                 state.get("slots", {}),
                 language,
+                emit_token,
             )
         elif intent == Intent.COMPARE:
             answer = (
@@ -428,6 +444,7 @@ class ShoppingAgentWorkflowNodes:
         return {
             "candidate_products": candidates,
             "answer": answer,
+            "answer_streamed": answer_streamed,
             "pending_action": pending_action,
             "wardrobe_plan": wardrobe_plan,
             "status": "answer_ready",

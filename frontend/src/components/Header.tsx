@@ -37,7 +37,7 @@ export function Header({ cartCount, user, onAuth, onLogout, onCart, onStylist, o
           <div className="flex items-center justify-end gap-1 sm:gap-2">
             <button onClick={() => setLanguage(language === "zh" ? "en" : "zh")} className="px-2 py-2 font-mono text-[10px]" aria-label="Language">{language === "zh" ? "EN" : "中文"}</button>
             <button onClick={() => onBrowse()} className="icon-button icon-button-hidden" aria-label={t("search")}><Search size={18} strokeWidth={1.4} /></button>
-            <button className="icon-button icon-button-hidden" onClick={onStylist} aria-label={t("openStylist")}><MessageCircle size={18} strokeWidth={1.4} /></button>
+            <button data-testid="open-stylist" className="icon-button icon-button-hidden" onClick={onStylist} aria-label={t("openStylist")}><MessageCircle size={18} strokeWidth={1.4} /></button>
             <button className="icon-button icon-button-hidden" onClick={user ? onLogout : onAuth} aria-label={user ? t("logout") : t("login")}>
               {user ? <LogOut size={17} strokeWidth={1.4} /> : <UserRound size={17} strokeWidth={1.4} />}
             </button>

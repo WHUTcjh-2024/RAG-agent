@@ -7,7 +7,7 @@ type Props = { product: Product; index: number; selected: boolean; onCompare: ()
 
 export function ProductCard({ product, index, selected, onCompare, onAdd, onDetail }: Props) {
   const { t } = useTranslation();
-  return <article className="product-card group animate-reveal" style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}>
+  return <article data-testid="product-card" className="product-card group animate-reveal" style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}>
     <div className="relative aspect-[3/4] overflow-hidden bg-[#e8e4dc]">
       <button onClick={onDetail} className="h-full w-full" aria-label={t("viewDetails", { name: product.prod_name })}><img src={productImage(product)} alt={product.prod_name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.035]" /></button>
       <span className="absolute left-3 top-3 bg-paper/90 px-2 py-1 font-mono text-[9px]">{String(index + 1).padStart(2, "0")}</span>

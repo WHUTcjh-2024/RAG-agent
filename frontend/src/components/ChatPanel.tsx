@@ -72,7 +72,7 @@ export function ChatPanel({ messages, streaming, onSubmit, onCancel }: Props) {
               <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-muted">
                 {message.role === "user" ? "You" : "Atelier"}
               </p>
-              <div className={message.role === "user" ? "bg-ink px-4 py-3 text-sm leading-6 text-white" : "border-l-2 border-accent/50 pl-4 text-sm leading-6"}>
+              <div data-testid={message.role === "assistant" ? "assistant-message" : undefined} className={message.role === "user" ? "bg-ink px-4 py-3 text-sm leading-6 text-white" : "border-l-2 border-accent/50 pl-4 text-sm leading-6"}>
                 {message.imagePreview && (
                   <img src={message.imagePreview} className="mb-3 h-28 w-24 object-cover" alt={t("uploadAlt")} />
                 )}
@@ -104,6 +104,7 @@ export function ChatPanel({ messages, streaming, onSubmit, onCancel }: Props) {
             <input type="file" accept="image/*" className="hidden" onChange={(event) => selectImage(event.target.files?.[0])} />
           </label>
           <textarea
+            data-testid="agent-message"
             aria-label={t("request")}
             value={value}
             onChange={(event) => setValue(event.target.value)}

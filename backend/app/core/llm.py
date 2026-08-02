@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.output_parsers import PydanticOutputParser
@@ -14,6 +15,8 @@ from app.core.agent.contracts import ErrorCode
 from app.core.agent.prompts import (
     GROUNDED_RECOMMENDATION_HUMAN,
     GROUNDED_RECOMMENDATION_SYSTEM,
+    GROUNDED_STREAM_HUMAN,
+    GROUNDED_STREAM_SYSTEM,
 )
 from app.core.request_id import current_request_id
 
@@ -31,9 +34,17 @@ class GroundedRecommendation(BaseModel):
 
 
 class GroundedRecommendationGenerator:
-    def __init__(self, chain=None) -> None:
+    def __init__(self, chain=None, streaming_llm=None) -> None:
         self.parser = PydanticOutputParser(pydantic_object=GroundedRecommendation)
         self.chain = chain if chain is not None else self._create_chain_from_env()
+        self.streaming_llm = (
+            streaming_llm
+            if streaming_llm is not None
+            else (None if chain is not None else self._create_streaming_llm_from_env())
+        )
+        self.streaming_prompt = ChatPromptTemplate.from_messages(
+            [("system", GROUNDED_STREAM_SYSTEM), ("human", GROUNDED_STREAM_HUMAN)]
+        )
 
     def _create_chain_from_env(self):
         if os.getenv("LLM_ENABLED", "true").strip().casefold() not in {"1", "true", "yes"}:
@@ -63,6 +74,55 @@ class GroundedRecommendationGenerator:
         return prompt | llm | self.parser
 
     @staticmethod
+    def _model_from_env(*, streaming: bool) -> ChatOpenAI | None:
+        if os.getenv("LLM_ENABLED", "true").strip().casefold() not in {"1", "true", "yes"}:
+            return None
+        api_key = os.getenv("LLM_API_KEY", "").strip()
+        model = os.getenv("LLM_MODEL", "").strip()
+        if not api_key or not model:
+            return None
+        return ChatOpenAI(
+            api_key=api_key,
+            model=model,
+            base_url=os.getenv("LLM_BASE_URL", "").strip() or None,
+            temperature=0,
+            max_retries=1,
+            request_timeout=30,
+            streaming=streaming,
+            extra_body={"thinking": {"type": os.getenv("LLM_THINKING", "disabled")}},
+        )
+
+    def _create_streaming_llm_from_env(self) -> ChatOpenAI | None:
+        return self._model_from_env(streaming=True)
+
+    def _payload(
+        self,
+        user_query: str,
+        products: list[dict[str, Any]],
+        slots: dict[str, Any],
+        history: list[dict[str, str]],
+        language: str,
+    ) -> dict[str, str]:
+        safe_products = [
+            {
+                key: product.get(key)
+                for key in (
+                    "article_id", "prod_name", "product_type_name", "product_group_name",
+                    "colour_group_name", "garment_group_name", "detail_desc", "score",
+                    "text_score", "image_score",
+                )
+            }
+            for product in products
+        ]
+        return {
+            "user_query": user_query,
+            "response_language": "English" if language == "en" else "中文",
+            "slots": json.dumps(slots, ensure_ascii=False),
+            "history": json.dumps(history[-6:], ensure_ascii=False),
+            "products": json.dumps(safe_products, ensure_ascii=False),
+        }
+
+    @staticmethod
     def _fallback(products: list[dict[str, Any]], language: str = "zh") -> tuple[str, dict[str, str]]:
         if not products:
             return ("No matching products were found. Try relaxing the color or category filters." if language == "en" else "暂时没有找到符合条件的商品，可以放宽颜色或品类限制。"), {}
@@ -87,34 +147,8 @@ class GroundedRecommendationGenerator:
             return self._fallback(products, language)
 
         allowed = {str(product["article_id"]) for product in products}
-        safe_products = [
-            {
-                key: product.get(key)
-                for key in (
-                    "article_id",
-                    "prod_name",
-                    "product_type_name",
-                    "product_group_name",
-                    "colour_group_name",
-                    "garment_group_name",
-                    "detail_desc",
-                    "score",
-                    "text_score",
-                    "image_score",
-                )
-            }
-            for product in products
-        ]
         try:
-            output = self.chain.invoke(
-                {
-                    "user_query": user_query,
-                    "response_language": "English" if language == "en" else "中文",
-                    "slots": json.dumps(slots, ensure_ascii=False),
-                    "history": json.dumps(history[-6:], ensure_ascii=False),
-                    "products": json.dumps(safe_products, ensure_ascii=False),
-                }
-            )
+            output = self.chain.invoke(self._payload(user_query, products, slots, history, language))
             if isinstance(output, dict):
                 output = GroundedRecommendation.model_validate(output)
             reasons: dict[str, str] = {}
@@ -132,3 +166,47 @@ class GroundedRecommendationGenerator:
                 type(error).__name__,
             )
             return self._fallback(products, language)
+
+    def generate_stream(
+        self,
+        *,
+        user_query: str,
+        products: list[dict[str, Any]],
+        slots: dict[str, Any],
+        history: list[dict[str, str]],
+        language: str,
+        on_token: Callable[[str], None],
+    ) -> tuple[str, dict[str, str], bool]:
+        """Stream provider tokens when available and keep a deterministic fallback."""
+        if self.streaming_llm is not None and products:
+            try:
+                chunks: list[str] = []
+                messages = self.streaming_prompt.format_messages(
+                    **self._payload(user_query, products, slots, history, language)
+                )
+                for chunk in self.streaming_llm.stream(messages):
+                    content = getattr(chunk, "content", "")
+                    token = content if isinstance(content, str) else ""
+                    if token:
+                        chunks.append(token)
+                        on_token(token)
+                answer = "".join(chunks).strip()
+                if answer:
+                    _, reasons = self._fallback(products, language)
+                    return answer, reasons, True
+            except Exception as error:
+                logger.warning(
+                    "agent_streaming_model_fallback request_id=%s code=%s stage=generate_answer error_type=%s",
+                    current_request_id(), ErrorCode.MODEL_UNAVAILABLE.value, type(error).__name__,
+                )
+                # Tokens already reached the client, so do not replay a fallback answer.
+                # The persisted response must remain identical to the streamed text.
+                answer = "".join(chunks).strip()
+                if answer:
+                    _, reasons = self._fallback(products, language)
+                    return answer, reasons, True
+
+        answer, reasons = self.generate(user_query, products, slots, history, language)
+        for start in range(0, len(answer), 24):
+            on_token(answer[start : start + 24])
+        return answer, reasons, bool(answer)

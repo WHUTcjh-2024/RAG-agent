@@ -238,6 +238,7 @@ async def chat_stream(
     resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
 
     async def events():
+        answer_streamed = False
         try:
             yield sse(
                 SSEEvent.STATUS,
@@ -282,6 +283,9 @@ async def chat_stream(
                         item = await queue.get()
                         if item["type"] == "node":
                             yield sse(SSEEvent.NODE, item["data"])
+                        elif item["type"] == "token":
+                            answer_streamed = True
+                            yield sse(SSEEvent.MESSAGE, {"delta": item["data"]["token"]})
                         elif item["type"] == "result":
                             response = item["response"]
                         elif item["type"] == "error":
@@ -338,13 +342,14 @@ async def chat_stream(
                 yield sse(SSEEvent.CONFIRM_REQUIRED, response["pending_action"])
             if response.get("wardrobe_plan"):
                 yield sse(SSEEvent.WARDROBE_PLAN, {"plan": response["wardrobe_plan"]})
-            answer = response["answer"]
-            for start in range(0, len(answer), 24):
-                yield sse(
-                    SSEEvent.MESSAGE,
-                    {"delta": answer[start : start + 24]},
-                )
-                await asyncio.sleep(0)
+            if not answer_streamed:
+                answer = response["answer"]
+                for start in range(0, len(answer), 24):
+                    yield sse(
+                        SSEEvent.MESSAGE,
+                        {"delta": answer[start : start + 24]},
+                    )
+                    await asyncio.sleep(0)
             yield sse(
                 SSEEvent.DONE,
                 {
