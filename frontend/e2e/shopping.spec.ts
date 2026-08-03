@@ -143,6 +143,29 @@ test("uploads an image and renders streamed grounded recommendations", async ({ 
   await expect(page.getByText("已找到真实目录中的相似商品。")).toBeVisible();
 });
 
+test("does not let delayed session recovery erase a live streamed answer", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/session", async route => {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    await route.fulfill({ json: { session_id: "e2e", slots: {}, history: [] } });
+  });
+  await page.route("**/api/chat/stream", route => route.fulfill({
+    contentType: "text/event-stream",
+    body: [
+      'event: message\ndata: {"delta":"流式答案不会被旧会话覆盖。"}\n\n',
+      'event: done\ndata: {"ok":true}\n\n'
+    ].join("")
+  }));
+
+  await page.goto("/agent");
+  await page.getByLabel("导购需求").fill("立即推荐");
+  await page.getByLabel("发送").click();
+  const answer = page.getByText("流式答案不会被旧会话覆盖。");
+  await expect(answer).toBeVisible();
+  await page.waitForTimeout(1800);
+  await expect(answer).toBeVisible();
+});
+
 test("switches the complete interface to English and persists the choice", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");

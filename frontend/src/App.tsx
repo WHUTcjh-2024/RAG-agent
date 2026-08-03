@@ -96,8 +96,11 @@ export default function App() {
       .then((page) => setEditorialProducts(page.items))
       .catch(() => undefined);
     fetchSession(store.sessionId).then((session) => {
-      store.setSlots(session.slots);
-      store.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
+      const currentState = useAppStore.getState();
+      if (currentState.messages.length === 0) {
+        currentState.setSlots(session.slots);
+        currentState.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
+      }
     }).catch(() => undefined);
     if (store.accessToken) {
       Promise.all([fetchCurrentUser(store.accessToken), fetchCart(store.accessToken)])
