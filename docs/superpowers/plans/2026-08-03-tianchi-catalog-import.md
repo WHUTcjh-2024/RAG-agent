@@ -14,6 +14,7 @@
 - 原始天池数据、商品图片、SQLite 库和向量索引必须继续被 Git 忽略。
 - 默认样本数必须为 `5000`，默认随机种子必须为 `42`。
 - 只保留带有可读取 JPEG、PNG 或 WebP 主图的商品；导入失败不得破坏现有 `articles_sample.csv` 或 `images/`。
+- CSV 表头校验必须使用命令行显式给出的商品 ID、名称与图片字段名；不得以启发式方式猜测首行是否是表头。
 - 不导入、输出或提交用户购买行为明细。
 
 ---
@@ -26,7 +27,7 @@
 
 **Interfaces:**
 - Consumes: CSV、JSONL 或 JSON 数组格式的商品元数据；本地图片根目录。
-- Produces: `load_metadata_rows(path: Path) -> list[dict[str, str]]`、`normalize_products(rows: list[dict[str, str]], images_dir: Path, mapping: dict[str, str]) -> list[dict[str, str]]`、`validate_output(output_dir: Path, expected_count: int) -> dict[str, int]`。
+- Produces: `load_metadata_rows(path: Path, required_columns: set[str] | None = None) -> list[dict[str, str]]`、`normalize_products(rows: list[dict[str, str]], images_dir: Path, mapping: dict[str, str]) -> list[dict[str, str]]`、`validate_output(output_dir: Path, expected_count: int) -> dict[str, int]`。
 
 - [ ] **Step 1: 写入最小 CSV/JSONL 与图片夹具测试**
 
@@ -60,12 +61,16 @@ Expected: FAIL，提示无法导入 `import_tianchi_catalog`。
 在 `backend/scripts/import_tianchi_catalog.py` 中实现：
 
 ```python
-def load_metadata_rows(path: Path) -> list[dict[str, str]]:
+def load_metadata_rows(
+    path: Path, required_columns: set[str] | None = None
+) -> list[dict[str, str]]:
     suffix = path.suffix.lower()
     if suffix == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if not reader.fieldnames:
+            if not reader.fieldnames or (
+                required_columns and not required_columns.issubset(reader.fieldnames)
+            ):
                 raise ValueError(f"Metadata CSV has no header: {path}")
             return [
                 {key: "" if value is None else str(value) for key, value in row.items()}
