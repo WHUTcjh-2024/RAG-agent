@@ -181,6 +181,30 @@ def test_sample_products_is_deterministic_and_independent_of_input_order() -> No
     assert sum(product["product_group_name"] == "bottoms" for product in selected) == 2
 
 
+def test_sample_products_seed_zero_is_independent_of_group_insertion_order() -> None:
+    products = [
+        {"article_id": f"000000000{index}", "product_group_name": group}
+        for group, index in (
+            ("tops", 1),
+            ("tops", 2),
+            ("tops", 3),
+            ("bottoms", 4),
+            ("bottoms", 5),
+            ("bottoms", 6),
+        )
+    ]
+
+    selected_ids = [
+        product["article_id"]
+        for product in sample_products(products, sample_size=4, seed=0)
+    ]
+
+    assert selected_ids == [
+        product["article_id"]
+        for product in sample_products(list(reversed(products)), sample_size=4, seed=0)
+    ]
+
+
 @pytest.mark.parametrize(
     ("sample_size", "message"),
     [

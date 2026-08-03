@@ -162,12 +162,12 @@ def sample_products(
         buckets.setdefault(product.get("product_group_name", ""), []).append(product)
 
     randomizer = random.Random(seed)
-    for group in buckets:
+    groups = sorted(buckets)
+    for group in groups:
         buckets[group] = sorted(buckets[group], key=lambda product: product["article_id"])
         randomizer.shuffle(buckets[group])
 
     selected: list[dict[str, str]] = []
-    groups = sorted(buckets)
     while len(selected) < sample_size:
         for group in groups:
             if buckets[group]:
