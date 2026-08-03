@@ -239,7 +239,7 @@ catalog_manifest.json
 }
 ```
 
-只在 `validate_output` 返回的 `products == images == expected_count` 后，依次用 `os.replace` 替换 `articles_sample.csv` 与 `images/`；写入失败时删除临时目录但不触碰正式输出。
+只在 `validate_output` 返回的 `products == images == expected_count` 后替换正式输出。因为 Windows 不能以 `os.replace` 直接覆盖非空目录，替换步骤必须先将旧 `images/` 重命名为同级备份目录，再替换 CSV 和图片目录；任一步骤失败时恢复旧 CSV 与旧图片目录，最后删除备份。只有两个正式输出都替换成功后才删除备份和临时目录。
 
 - [ ] **Step 5: 实现输出校验**
 
