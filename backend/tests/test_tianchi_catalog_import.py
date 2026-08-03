@@ -10,10 +10,12 @@ import tempfile
 import pytest
 from PIL import Image
 
+import scripts.import_tianchi_catalog as tianchi_catalog
 from scripts.data_utils import PRODUCT_FIELDS
 from scripts.import_tianchi_catalog import (
     load_metadata_rows,
     normalize_products,
+    parse_args,
     sample_products,
     validate_output,
     write_catalog,
@@ -159,6 +161,37 @@ def test_normalize_products_keeps_only_valid_records(tmp_path: Path) -> None:
     ]
     assert set(products[0]).issuperset(PRODUCT_FIELDS)
     assert "0000000011" not in {product["article_id"] for product in products}
+
+
+@pytest.mark.parametrize("unsafe_id", ["../../escape", "/absolute", "a/b", "a\\b", "."])
+def test_normalize_products_rejects_path_like_article_id(
+    tmp_path: Path, unsafe_id: str
+) -> None:
+    images_dir = tmp_path / "images"
+    create_image(images_dir / "shirt.png")
+
+    products = normalize_products(
+        [{"id": unsafe_id, "name": "shirt", "image": "shirt.png"}],
+        images_dir,
+        {"id": "id", "name": "name", "image": "image"},
+    )
+
+    assert products == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("price", "N/A"), ("price", "NaN"), ("popularity", "Infinity")],
+)
+def test_normalize_products_rejects_non_finite_numeric_fields(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    images_dir = tmp_path / "images"
+    create_image(images_dir / "shirt.png")
+    row = {"id": "100", "name": "shirt", "image": "shirt.png", field: value}
+    mapping = {"id": "id", "name": "name", "image": "image", field: field}
+
+    assert normalize_products([row], images_dir, mapping) == []
 
 
 def test_sample_products_is_deterministic_and_independent_of_input_order() -> None:
@@ -359,6 +392,49 @@ def test_write_catalog_restores_existing_output_when_promotion_fails(
     assert legacy_manifest.read_text(encoding="utf-8") == "legacy manifest"
 
 
+def test_catalog_transaction_recovers_after_keyboard_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_image = tmp_path / "source" / "shirt.png"
+    create_image(source_image)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    legacy_csv = output_dir / "articles_sample.csv"
+    legacy_csv.write_text("legacy csv", encoding="utf-8")
+    legacy_image = output_dir / "images" / "legacy.png"
+    legacy_image.parent.mkdir()
+    legacy_image.write_bytes(b"legacy image")
+    legacy_manifest = output_dir / "catalog_manifest.json"
+    legacy_manifest.write_text("legacy manifest", encoding="utf-8")
+    selected = [
+        {
+            **{field: "" for field in PRODUCT_FIELDS},
+            "article_id": "0000000001",
+            "image_path": "images/0000000001.png",
+            "source_image": str(source_image),
+        }
+    ]
+    original_rename = Path.rename
+
+    def interrupt_after_image_promotion(path: Path, target: Path) -> Path:
+        if target == output_dir / "articles_sample.csv" and path.parent != output_dir:
+            raise KeyboardInterrupt("simulated interruption")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", interrupt_after_image_promotion)
+    with pytest.raises(KeyboardInterrupt, match="simulated interruption"):
+        write_catalog(selected, output_dir, source_name="tianchi", seed=19)
+    monkeypatch.setattr(Path, "rename", original_rename)
+
+    interrupted_follow_up = [{**selected[0], "source_image": str(tmp_path / "missing.png")}]
+    with pytest.raises(FileNotFoundError):
+        write_catalog(interrupted_follow_up, output_dir, source_name="tianchi", seed=19)
+
+    assert legacy_csv.read_text(encoding="utf-8") == "legacy csv"
+    assert legacy_image.read_bytes() == b"legacy image"
+    assert legacy_manifest.read_text(encoding="utf-8") == "legacy manifest"
+
+
 def test_cli_imports_chinese_catalog_from_outside_repository(tmp_path: Path) -> None:
     metadata_path = tmp_path / "catalog.csv"
     images_dir = tmp_path / "images"
@@ -465,3 +541,49 @@ def test_cli_normalizes_parse_errors_and_preserves_help_exit_code() -> None:
     assert "ERROR:" in missing_option.stderr
     assert help_result.returncode == 0
     assert "--metadata" in help_result.stdout
+
+
+def test_parse_args_defaults_to_ignored_tianchi_runtime_catalog() -> None:
+    args = parse_args(
+        [
+            "--metadata",
+            "catalog.csv",
+            "--images-dir",
+            "images",
+            "--id-column",
+            "id",
+            "--name-column",
+            "name",
+            "--image-column",
+            "image",
+        ]
+    )
+
+    assert args.out_dir == Path(__file__).resolve().parents[1] / "data" / "tianchi-catalog"
+
+
+def test_main_formats_malformed_csv_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def raise_csv_error(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        raise csv.Error("malformed CSV")
+
+    monkeypatch.setattr(tianchi_catalog, "load_metadata_rows", raise_csv_error)
+
+    result = tianchi_catalog.main(
+        [
+            "--metadata",
+            "catalog.csv",
+            "--images-dir",
+            "images",
+            "--id-column",
+            "id",
+            "--name-column",
+            "name",
+            "--image-column",
+            "image",
+        ]
+    )
+
+    assert result == 1
+    assert "ERROR: malformed CSV" in capsys.readouterr().err

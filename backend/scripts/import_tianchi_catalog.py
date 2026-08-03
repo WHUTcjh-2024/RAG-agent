@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -30,6 +32,7 @@ from scripts.data_utils import (
 SUPPORTED_METADATA_SUFFIXES = {".csv", ".jsonl", ".ndjson", ".json"}
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REQUIRED_MAPPING_KEYS = {"id", "name", "image"}
+SAFE_ARTICLE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class CatalogArgumentParser(argparse.ArgumentParser):
@@ -85,6 +88,22 @@ def _mapped_value(row: dict[str, str], mapping: dict[str, str], name: str) -> st
     return clean_text(row.get(source_key, "")) if source_key else ""
 
 
+def _is_safe_article_id(article_id: str) -> bool:
+    return bool(SAFE_ARTICLE_ID_PATTERN.fullmatch(article_id))
+
+
+def _finite_number(value: str) -> str | None:
+    if not value:
+        return ""
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation:
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return format(parsed, "f")
+
+
 def _is_valid_image(path: Path) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
@@ -113,7 +132,12 @@ def normalize_products(
         article_id = normalize_article_id(_mapped_value(row, mapping, "id"))
         name = _mapped_value(row, mapping, "name")
         image_value = _mapped_value(row, mapping, "image")
-        if not article_id or not name or not image_value:
+        if (
+            not article_id
+            or not _is_safe_article_id(article_id)
+            or not name
+            or not image_value
+        ):
             continue
 
         source_image = (root / image_value).resolve()
@@ -129,8 +153,10 @@ def normalize_products(
         category = _mapped_value(row, mapping, "category") or "未分类"
         color = _mapped_value(row, mapping, "color") or "未知"
         description = _mapped_value(row, mapping, "description") or name
-        price = _mapped_value(row, mapping, "price")
-        popularity = _mapped_value(row, mapping, "popularity") or "0"
+        price = _finite_number(_mapped_value(row, mapping, "price"))
+        popularity = _finite_number(_mapped_value(row, mapping, "popularity") or "0")
+        if price is None or popularity is None:
+            continue
         product = {
             "article_id": article_id,
             "product_code": article_id,
@@ -190,10 +216,97 @@ def sample_products(
 
 
 def _remove_path(path: Path) -> None:
-    if path.is_dir():
-        shutil.rmtree(path)
-    elif path.exists():
+    if path.is_symlink() or path.is_file():
         path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _transaction_path(output_dir: Path) -> Path:
+    return output_dir / ".tianchi_catalog_transaction.json"
+
+
+def _write_catalog_transaction(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+def _read_catalog_transaction(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Unable to read catalog transaction: {path}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Invalid catalog transaction: {path}")
+    return payload
+
+
+def _transaction_entries(payload: dict[str, object]) -> list[dict[str, object]]:
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or len(entries) != 3:
+        raise RuntimeError("Invalid catalog transaction entries")
+    expected_names = {"images", "articles_sample.csv", "catalog_manifest.json"}
+    names: set[str] = set()
+    validated: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError("Invalid catalog transaction entry")
+        name = entry.get("name")
+        backup = entry.get("backup")
+        existed = entry.get("existed")
+        if (
+            not isinstance(name, str)
+            or not isinstance(backup, str)
+            or not isinstance(existed, bool)
+            or name not in expected_names
+            or Path(name).name != name
+            or Path(backup).name != backup
+            or not backup.startswith(".tianchi_catalog_backup_")
+        ):
+            raise RuntimeError("Invalid catalog transaction entry")
+        names.add(name)
+        validated.append({"name": name, "backup": backup, "existed": existed})
+    if names != expected_names:
+        raise RuntimeError("Invalid catalog transaction entries")
+    return validated
+
+
+def _recover_catalog_transaction(output_dir: Path) -> None:
+    """Restore an interrupted publication or finish committed backup cleanup."""
+    path = _transaction_path(output_dir)
+    if not _path_exists(path):
+        return
+    payload = _read_catalog_transaction(path)
+    state = payload.get("state")
+    if state not in {"publishing", "committed"}:
+        raise RuntimeError("Invalid catalog transaction state")
+    entries = _transaction_entries(payload)
+
+    if state == "committed":
+        for entry in entries:
+            backup = output_dir / str(entry["backup"])
+            if _path_exists(backup):
+                _remove_path(backup)
+        path.unlink()
+        return
+
+    for entry in entries:
+        target = output_dir / str(entry["name"])
+        backup = output_dir / str(entry["backup"])
+        if _path_exists(backup):
+            if _path_exists(target):
+                _remove_path(target)
+            backup.rename(target)
+        elif not entry["existed"] and _path_exists(target):
+            _remove_path(target)
+    path.unlink()
 
 
 def _validate_or_raise(condition: bool, message: str) -> None:
@@ -245,20 +358,13 @@ def validate_output(output_dir: Path, expected_count: int) -> dict[str, int]:
     return {"products": expected_count, "images": expected_count}
 
 
-def _restore_previous_output(
-    promoted: list[Path], backups: list[tuple[Path, Path]]
-) -> None:
-    for path in reversed(promoted):
-        _remove_path(path)
-    for target, backup in reversed(backups):
-        backup.rename(target)
-
-
 def write_catalog(
     selected: list[dict[str, str]], output_dir: Path, source_name: str, seed: int
 ) -> dict[str, int]:
     """Write a verified catalog through a temporary directory and reversible swap."""
     output_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _recover_catalog_transaction(output_dir)
     temporary_dir = Path(
         tempfile.mkdtemp(prefix=".tianchi_catalog_", dir=output_dir.parent)
     )
@@ -296,33 +402,39 @@ def write_catalog(
         )
         validate_output(temporary_dir, expected_count)
 
-        output_dir.mkdir(parents=True, exist_ok=True)
         backup_token = uuid.uuid4().hex
         targets = (
             (output_dir / "images", temporary_images),
             (output_dir / "articles_sample.csv", temporary_csv),
             (output_dir / "catalog_manifest.json", temporary_manifest),
         )
-        backups: list[tuple[Path, Path]] = []
-        promoted: list[Path] = []
+        transaction_path = _transaction_path(output_dir)
+        transaction = {
+            "state": "publishing",
+            "entries": [
+                {
+                    "name": target.name,
+                    "backup": f".tianchi_catalog_backup_{backup_token}_{target.name}",
+                    "existed": _path_exists(target),
+                }
+                for target, _ in targets
+            ],
+        }
         try:
-            for target, _ in targets:
-                if target.exists():
-                    backup = target.with_name(
-                        f".tianchi_catalog_backup_{backup_token}_{target.name}"
-                    )
-                    target.rename(backup)
-                    backups.append((target, backup))
+            _write_catalog_transaction(transaction_path, transaction)
+            entries = _transaction_entries(transaction)
+            for (target, _), entry in zip(targets, entries, strict=True):
+                if entry["existed"]:
+                    target.rename(output_dir / str(entry["backup"]))
             for target, temporary in targets:
                 temporary.rename(target)
-                promoted.append(target)
             validate_output(output_dir, expected_count)
+            transaction["state"] = "committed"
+            _write_catalog_transaction(transaction_path, transaction)
+            _recover_catalog_transaction(output_dir)
         except Exception:
-            _restore_previous_output(promoted, backups)
+            _recover_catalog_transaction(output_dir)
             raise
-        else:
-            for _, backup in backups:
-                _remove_path(backup)
 
         return {"products": expected_count, "images": expected_count}
     finally:
@@ -343,7 +455,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--popularity-column")
     parser.add_argument("--sample-size", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--out-dir", type=Path, default=BACKEND_DIR / "data" / "sample")
+    parser.add_argument(
+        "--out-dir", type=Path, default=BACKEND_DIR / "data" / "tianchi-catalog"
+    )
     return parser.parse_args(argv)
 
 
@@ -378,7 +492,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     except SystemExit as error:
         return 0 if error.code == 0 else 1
-    except (FileNotFoundError, ValueError, RuntimeError, OSError, json.JSONDecodeError) as error:
+    except (
+        FileNotFoundError,
+        ValueError,
+        RuntimeError,
+        OSError,
+        csv.Error,
+        json.JSONDecodeError,
+    ) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
