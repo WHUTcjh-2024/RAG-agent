@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Slots, ToolTrace } from "../types";
-import { ApiClientError, buildProductQuery, fetchProducts, streamChat } from "./client";
+import { ApiClientError, buildProductQuery, fetchProducts, phaseForNode, streamChat } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -36,6 +36,58 @@ describe("buildProductQuery", () => {
       page_size: "12",
       sort: "popular"
     });
+  });
+
+  it("maps backend workflow nodes to stable visual phases", () => {
+    expect(phaseForNode("understand_request")).toBe("constraints");
+    expect(phaseForNode("retrieve_candidates")).toBe("retrieval");
+    expect(phaseForNode("build_evidence")).toBe("verification");
+    expect(phaseForNode("complete")).toBe("success");
+    expect(phaseForNode("future_node")).toBe("understanding");
+  });
+
+  it("dispatches status, node, evidence and completion events", async () => {
+    const body = [
+      "event: status\ndata: {\"state\":\"processing\",\"request_id\":\"req-1\",\"task_id\":\"task-1\"}",
+      "event: node\ndata: {\"node\":\"build_evidence\",\"state\":\"completed\",\"duration_ms\":12.5,\"summary\":\"2 sources\"}",
+      "event: evidence\ndata: {\"item\":{\"source_id\":\"catalog:1\",\"source_type\":\"catalog\",\"field\":\"material\",\"value\":\"cotton\"}}",
+      "event: done\ndata: {\"ok\":true}",
+      ""
+    ].join("\n\n");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream", "X-Agent-Task-Id": "task-1" }
+    })));
+    const onStatus = vi.fn();
+    const onNode = vi.fn();
+    const onEvidence = vi.fn();
+    const onDone = vi.fn();
+    const onTaskId = vi.fn();
+
+    await streamChat("推荐棉质衬衫", "session-1", null, "zh", {
+      onStatus,
+      onNode,
+      onEvidence,
+      onDone,
+      onTaskId,
+      onMeta: vi.fn(),
+      onTool: vi.fn(),
+      onProducts: vi.fn(),
+      onComparison: vi.fn(),
+      onDecision: vi.fn(),
+      onConfirmRequired: vi.fn(),
+      onWardrobePlan: vi.fn(),
+      onMessage: vi.fn(),
+      onError: vi.fn()
+    });
+
+    expect(onTaskId).toHaveBeenCalledWith("task-1");
+    expect(onStatus).toHaveBeenCalledWith({ state: "processing", requestId: "req-1", taskId: "task-1" });
+    expect(onNode).toHaveBeenCalledWith(expect.objectContaining({
+      node: "build_evidence", phase: "verification", state: "completed", durationMs: 12.5, summary: "2 sources"
+    }));
+    expect(onEvidence).toHaveBeenCalledWith(expect.objectContaining({ source_id: "catalog:1", field: "material" }));
+    expect(onDone).toHaveBeenCalledOnce();
   });
 
   it("keeps typed backend errors and request IDs", async () => {

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { GitCompareArrows } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { AnimatePresence, LayoutGroup, motion } from "motion/react";
+import { GitCompareArrows, X } from "lucide-react";
 import { createClientId } from "./utils/clientId";
 import {
   addCart,
@@ -12,171 +13,152 @@ import {
   fetchFacets,
   fetchProduct,
   fetchProducts,
-  fetchWardrobe,
   fetchSession,
+  fetchWardrobe,
   login,
+  productImage,
   recordAgentActionCompletion,
   recordWardrobeFeedback,
-  replanWardrobe,
   register,
   removeCart,
+  replanWardrobe,
   streamChat
 } from "./api/client";
-import { CompareDrawer, CartDrawer, ProductDetailDrawer } from "./components/Drawers";
-import { AuthDrawer } from "./components/AuthDrawer";
-import { BrowseControls } from "./components/BrowseControls";
-import { Header } from "./components/Header";
-import { Hero } from "./components/Hero";
-import { ProductGrid } from "./components/ProductGrid";
-import { StylistDrawer } from "./components/StylistDrawer";
-import { useAppStore } from "./store/useAppStore";
-import type { Product, ProductFacets, ProductQuery } from "./types";
+import { CartDrawer, AuthOverlay, CartFlight, NetworkNotice, type Flight } from "./components/CommerceOverlays";
+import { HomeScreen } from "./components/HomeScreen";
+import { AppTopBar, BottomNavigation } from "./components/MobileShell";
+import { ProductCollection } from "./components/ProductCollection";
+import { ProfileScreen } from "./components/ProfileScreen";
+import { WardrobeScreen } from "./components/WardrobeScreen";
 import { useTranslation } from "./i18n";
+import { useMotionSystem } from "./motion/MotionSystem";
+import { PageTransition } from "./motion/PageTransition";
+import { motionTokens } from "./motion/tokens";
+import { useAppStore } from "./store/useAppStore";
+import type { AgentNodeEvent, AgentPhase, DecisionEvidence, Product, ProductFacets, ProductQuery } from "./types";
+
+type ViewTransitionDocument = Document & { startViewTransition?: (update: () => void) => { finished: Promise<void> } };
+type AgentViewState = "idle" | AgentPhase;
+
+const AgentWorkspace = lazy(() => import("./components/AgentWorkspace").then((module) => ({ default: module.AgentWorkspace })));
+const CompareWorkspace = lazy(() => import("./components/CompareWorkspace").then((module) => ({ default: module.CompareWorkspace })));
+const ProductDetail = lazy(() => import("./components/ProductDetail").then((module) => ({ default: module.ProductDetail })));
 
 export default function App() {
   const { language, t } = useTranslation();
+  const { reduced } = useMotionSystem();
   const store = useAppStore();
+  const [pathname, setPathname] = useState(() => window.location.pathname);
   const [cartOpen, setCartOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
-  const [compareOpen, setCompareOpen] = useState(false);
-  const [stylistOpen, setStylistOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState<ProductQuery>({ page: 1, pageSize: 12, sort: "popular" });
   const [facets, setFacets] = useState<ProductFacets | null>(null);
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
+  const [editorialProducts, setEditorialProducts] = useState<Product[]>([]);
+  const [agentProducts, setAgentProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [detail, setDetail] = useState<Product | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [flight, setFlight] = useState<Flight | null>(null);
+  const [agentState, setAgentState] = useState<AgentViewState>("idle");
+  const [agentEvents, setAgentEvents] = useState<AgentNodeEvent[]>([]);
+  const [agentEvidence, setAgentEvidence] = useState<DecisionEvidence[]>([]);
+  const [agentError, setAgentError] = useState("");
   const abortController = useRef<AbortController | null>(null);
   const activeTaskId = useRef<string | null>(null);
+  const catalogRequest = useRef(0);
+  const lastAgentRequest = useRef<{ message: string; image: File | null; preview: string | null } | null>(null);
+
+  const transitionNavigate = useCallback((to: string | number) => {
+    const update = () => {
+      if (typeof to === "number") history.go(to);
+      else {
+        if (window.location.pathname !== to) history.pushState({}, "", to);
+        setPathname(to);
+        window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+      }
+    };
+    const documentWithTransition = document as ViewTransitionDocument;
+    if (!reduced && documentWithTransition.startViewTransition) documentWithTransition.startViewTransition(update);
+    else update();
+  }, [reduced]);
+
+  useEffect(() => {
+    const update = () => setPathname(window.location.pathname);
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
 
   useEffect(() => {
     fetchFacets().then(setFacets).catch((error) => setNotice(error.message));
+    fetchProducts({ page: 1, pageSize: 6, category: "Dress", sort: "popular" })
+      .then((page) => setEditorialProducts(page.items))
+      .catch(() => undefined);
     fetchSession(store.sessionId).then((session) => {
       store.setSlots(session.slots);
       store.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
-    }).catch((error) => setNotice(error.message));
+    }).catch(() => undefined);
     if (store.accessToken) {
-      Promise.all([
-        fetchCurrentUser(store.accessToken),
-        fetchCart(store.accessToken)
-      ]).then(([user, cart]) => {
-        store.setAuth(store.accessToken, user);
-        store.setCart(cart);
-      }).catch(() => store.setAuth("", null));
-      fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => {
-        // Wardrobe is additive; unavailable Java data must not invalidate login or cart state.
-      });
+      Promise.all([fetchCurrentUser(store.accessToken), fetchCart(store.accessToken)])
+        .then(([user, cart]) => { store.setAuth(store.accessToken, user); store.setCart(cart); })
+        .catch(() => store.setAuth("", null));
+      fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => undefined);
     }
   }, []);
 
   useEffect(() => {
+    const request = ++catalogRequest.current;
     setLoading(true);
     const timer = window.setTimeout(() => {
-      fetchProducts(query)
-        .then((page) => { store.setProducts(page.items); setTotal(page.total); })
-        .catch((error) => setNotice(error.message))
-        .finally(() => setLoading(false));
-    }, query.search ? 250 : 0);
+      fetchProducts(query).then((page) => {
+        if (request !== catalogRequest.current) return;
+        setCatalogProducts(page.items); store.setProducts(page.items); setTotal(page.total);
+      }).catch((error) => setNotice(error.message)).finally(() => {
+        if (request === catalogRequest.current) setLoading(false);
+      });
+    }, query.search ? 240 : 0);
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const browse = (indexGroup?: string) => {
-    setQuery((current) => ({ ...current, indexGroup: indexGroup || "", page: 1 }));
-    window.setTimeout(() => document.getElementById("collection")?.scrollIntoView({ behavior: "smooth" }), 0);
-  };
+  const productId = pathname.startsWith("/product/") ? decodeURIComponent(pathname.slice("/product/".length)) : "";
+  useEffect(() => {
+    const id = productId;
+    if (!id || detail?.article_id === id) return;
+    const existing = [...catalogProducts, ...agentProducts].find((product) => product.article_id === id);
+    if (existing) setDetail(existing);
+    fetchProduct(id).then(setDetail).catch((error) => setNotice(error.message));
+  }, [productId]);
+
+  const changeQuery = (patch: Partial<ProductQuery>) => setQuery((current) => ({ ...current, ...patch }));
+  const clearQuery = () => setQuery({ page: 1, pageSize: query.pageSize || 12, sort: query.sort || "popular" });
 
   const showDetail = async (id: string) => {
+    const existing = [...catalogProducts, ...agentProducts].find((product) => product.article_id === id);
+    if (existing) setDetail(existing);
+    transitionNavigate(`/product/${encodeURIComponent(id)}`);
     try { setDetail(await fetchProduct(id)); }
     catch (error) { setNotice(error instanceof Error ? error.message : t("detailFailed")); }
   };
 
-  const submit = async (message: string, image: File | null, preview: string | null) => {
-    store.addMessage({ id: createClientId(), role: "user", content: message || t("similarImage"), imagePreview: preview || undefined });
-    store.setStreaming(true);
-    setNotice("");
-    activeTaskId.current = null;
-    abortController.current = new AbortController();
-    try {
-      await streamChat(message, store.sessionId, image, language, {
-        onMeta: ({ slots, task_id }) => { activeTaskId.current = task_id; store.setSlots(slots); },
-        onTaskId: (taskId) => { activeTaskId.current = taskId; },
-        onTool: store.addTrace,
-        onProducts: store.setProducts,
-        onComparison: store.setComparison,
-        onDecision: store.setDecision,
-        onConfirmRequired: store.setPendingAction,
-        onWardrobePlan: store.setWardrobePlan,
-        onMessage: store.appendAssistant,
-        onError: () => undefined
-      }, store.accessToken, abortController.current.signal);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      const text = error instanceof Error ? error.message : t("requestFailed");
-      store.appendAssistant(`${t("unable")}${text}`);
-      setNotice(text);
-    } finally {
-      abortController.current = null;
-      activeTaskId.current = null;
-      store.setStreaming(false);
-    }
-  };
-
-  const cancelChat = () => {
-    const taskId = activeTaskId.current;
-    abortController.current?.abort();
-    if (taskId) {
-      cancelAgentTask(store.accessToken, taskId, store.sessionId).catch(() => {
-        // Client cancellation is immediate; server cancellation is best effort after network loss.
-      });
-    }
-  };
-
-  const confirmPendingAction = async () => {
-    if (!store.accessToken || !store.pendingAction) return;
-    try {
-      const item = await confirmAgentCartAction(store.accessToken, store.pendingAction);
-      await recordAgentActionCompletion(store.accessToken, store.pendingAction.action_id, item.id);
-      store.setCart(await fetchCart(store.accessToken));
-      store.setPendingAction(null);
-      setNotice(t("added"));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : t("addFailed"));
-    }
-  };
-
-  const editWardrobePlan = async (operation: Record<string, unknown>) => {
-    if (!store.accessToken || !store.wardrobePlan) return;
-    try {
-      store.setWardrobePlan(await replanWardrobe(store.accessToken, store.wardrobePlan.plan_id, store.wardrobePlan, operation));
-      store.setWardrobe(await fetchWardrobe(store.accessToken));
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : t("requestFailed"));
-    }
-  };
-
-  const acceptWardrobePlan = async () => {
-    if (!store.accessToken || !store.wardrobePlan) return;
-    try {
-      await recordWardrobeFeedback(store.accessToken, { planRef: store.wardrobePlan.plan_id, outcome: "ADOPTED" });
-      setNotice("已记录本次穿搭采纳");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : t("requestFailed"));
-    }
-  };
-
-  const add = async (id: string) => {
+  const add = async (id: string, origin: DOMRect): Promise<boolean> => {
     if (!store.accessToken || !store.user) {
-      setAuthOpen(true);
-      setNotice(t("loginForCart"));
-      return;
+      setAuthOpen(true); setNotice(t("loginForCart")); return false;
     }
     try {
-      const product = store.products.find((item) => item.article_id === id)
+      const product = [...catalogProducts, ...agentProducts].find((item) => item.article_id === id)
         || (detail?.article_id === id ? detail : await fetchProduct(id));
       await addCart(store.accessToken, product);
       store.setCart(await fetchCart(store.accessToken));
-      setNotice(t("added"));
-    } catch (error) { setNotice(error instanceof Error ? error.message : t("addFailed")); }
+      const target = document.querySelector("[data-cart-target]")?.getBoundingClientRect();
+      if (target && !reduced) {
+        setFlight({ key: Date.now(), image: productImage(product), origin, target });
+        window.setTimeout(() => setFlight(null), 650);
+      }
+      setNotice(t("added")); return true;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("addFailed")); return false;
+    }
   };
 
   const openCompare = async () => {
@@ -184,91 +166,171 @@ export default function App() {
     try {
       const result = await compareProducts(store.compareIds);
       store.setComparison(result.products);
-      setCompareOpen(true);
+      transitionNavigate("/compare");
     } catch (error) { setNotice(error instanceof Error ? error.message : t("compareFailed")); }
   };
 
-  const authenticate = async (
-    mode: "login" | "register",
-    credentials: { email: string; password: string; displayName?: string }
-  ) => {
-    const result = mode === "login"
-      ? await login(credentials.email, credentials.password)
-      : await register(credentials.email, credentials.password, credentials.displayName || "");
-    store.setAuth(result.accessToken, result.user);
-    store.setCart(await fetchCart(result.accessToken));
-    setAuthOpen(false);
-    setNotice(t("authSuccess"));
+  const submitAgent = async (message: string, image: File | null, preview: string | null) => {
+    const requestMessage = message || t("similarImage");
+    lastAgentRequest.current = { message, image, preview };
+    store.addMessage({ id: createClientId(), role: "user", content: requestMessage, imagePreview: preview || undefined });
+    store.resetExecution();
+    store.setStreaming(true); setAgentState("understanding"); setAgentEvents([]); setAgentEvidence([]); setAgentProducts([]); setAgentError("");
+    activeTaskId.current = null;
+    abortController.current = new AbortController();
+    let semanticBuffer = "";
+    let semanticTimer: number | undefined;
+    const flush = () => {
+      if (!semanticBuffer) return;
+      store.appendAssistant(semanticBuffer); semanticBuffer = "";
+      if (semanticTimer) window.clearTimeout(semanticTimer);
+      semanticTimer = undefined;
+    };
+    const enqueue = (delta: string) => {
+      semanticBuffer += delta;
+      if (semanticBuffer.length >= 42 || /[。！？.!?]\s*$/.test(semanticBuffer)) flush();
+      else if (!semanticTimer) semanticTimer = window.setTimeout(flush, 64);
+    };
+
+    try {
+      await streamChat(message, store.sessionId, image, language, {
+        onStatus: ({ taskId }) => { if (taskId) activeTaskId.current = taskId; },
+        onTaskId: (taskId) => { activeTaskId.current = taskId; },
+        onNode: (event) => {
+          setAgentEvents((events) => {
+            const repeated = event.state === "started" && events.some((item) => item.node === event.node && item.state === "started");
+            setAgentState(repeated ? "retrying" : event.state === "failed" ? "failure" : event.phase);
+            return [...events, event].slice(-40);
+          });
+        },
+        onMeta: ({ slots, task_id }) => { activeTaskId.current = task_id; store.setSlots(slots); },
+        onTool: (trace) => { store.addTrace(trace); setAgentState("tool"); },
+        onProducts: (products) => { setAgentProducts(products); setAgentState("retrieval"); },
+        onComparison: (products) => { store.setComparison(products); setAgentState("comparison"); },
+        onEvidence: (evidence) => { setAgentEvidence((items) => [...items, evidence]); setAgentState("verification"); },
+        onDecision: store.setDecision,
+        onConfirmRequired: (action) => { store.setPendingAction(action); setAgentState("waiting"); },
+        onWardrobePlan: store.setWardrobePlan,
+        onMessage: (delta) => { setAgentState("generation"); enqueue(delta); },
+        onDone: () => { flush(); setAgentState("success"); },
+        onError: (error) => { setAgentError(error); setAgentState("failure"); }
+      }, store.accessToken, abortController.current.signal);
+      flush();
+    } catch (error) {
+      flush();
+      if (error instanceof DOMException && error.name === "AbortError") { setAgentState("cancelled"); return; }
+      const text = error instanceof Error ? error.message : t("requestFailed");
+      setAgentError(text); setAgentState("failure");
+    } finally {
+      if (semanticTimer) window.clearTimeout(semanticTimer);
+      flush(); abortController.current = null; activeTaskId.current = null; store.setStreaming(false);
+    }
   };
 
-  const logout = () => {
-    store.setAuth("", null);
-    setCartOpen(false);
-    setNotice(t("loggedOut"));
+  const cancelAgent = () => {
+    const taskId = activeTaskId.current;
+    abortController.current?.abort(); setAgentState("cancelled");
+    if (taskId) cancelAgentTask(store.accessToken, taskId, store.sessionId).catch(() => undefined);
   };
 
+  const retryAgent = () => {
+    if (!lastAgentRequest.current || store.streaming) return;
+    setAgentState("retrying");
+    const request = lastAgentRequest.current;
+    window.setTimeout(() => submitAgent(request.message, request.image, request.preview), 180);
+  };
+
+  const confirmPendingAction = async () => {
+    if (!store.accessToken || !store.pendingAction) return;
+    try {
+      const item = await confirmAgentCartAction(store.accessToken, store.pendingAction);
+      await recordAgentActionCompletion(store.accessToken, store.pendingAction.action_id, item.id);
+      store.setCart(await fetchCart(store.accessToken)); store.setPendingAction(null); setAgentState("success"); setNotice(t("added"));
+    } catch (error) { setAgentError(error instanceof Error ? error.message : t("addFailed")); setAgentState("failure"); }
+  };
+
+  const editWardrobePlan = async (operation: Record<string, unknown>) => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try {
+      store.setWardrobePlan(await replanWardrobe(store.accessToken, store.wardrobePlan.plan_id, store.wardrobePlan, operation));
+      store.setWardrobe(await fetchWardrobe(store.accessToken));
+    } catch (error) { setAgentError(error instanceof Error ? error.message : t("requestFailed")); }
+  };
+
+  const acceptWardrobePlan = async () => {
+    if (!store.accessToken || !store.wardrobePlan) return;
+    try { await recordWardrobeFeedback(store.accessToken, { planRef: store.wardrobePlan.plan_id, outcome: "ADOPTED" }); setNotice(t("adoptPlan")); }
+    catch (error) { setAgentError(error instanceof Error ? error.message : t("requestFailed")); }
+  };
+
+  const authenticate = async (mode: "login" | "register", credentials: { email: string; password: string; displayName?: string }) => {
+    const result = mode === "login" ? await login(credentials.email, credentials.password) : await register(credentials.email, credentials.password, credentials.displayName || "");
+    store.setAuth(result.accessToken, result.user); store.setCart(await fetchCart(result.accessToken)); setAuthOpen(false); setNotice(t("authSuccess"));
+  };
+
+  const logout = () => { store.setAuth("", null); setCartOpen(false); setNotice(t("loggedOut")); };
   const emptyCart = async () => {
     if (!store.accessToken) return;
-    try {
-      await clearCart(store.accessToken);
-      store.setCart([]);
-    } catch (error) { setNotice(error instanceof Error ? error.message : t("clearCartFailed")); }
+    try { await clearCart(store.accessToken); store.setCart([]); }
+    catch (error) { setNotice(error instanceof Error ? error.message : t("clearCartFailed")); }
   };
 
-  return (
-    <div className="min-h-screen bg-paper text-ink">
-      <Header
-        cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)}
-        user={store.user}
-        onAuth={() => setAuthOpen(true)}
-        onLogout={logout}
-        onStylist={() => setStylistOpen(true)}
-        onBrowse={browse}
-        onCart={() => setCartOpen(true)}
-      />
-      <main>
-        <Hero products={store.products} total={total} onStylist={() => setStylistOpen(true)} />
-        <section className="mx-auto max-w-[1600px] px-4 py-16 sm:px-6 lg:px-10 lg:py-24">
-          <BrowseControls facets={facets} query={query} onChange={(patch) => setQuery((current) => ({ ...current, ...patch }))} />
-          {loading && <p className="mb-4 text-xs text-muted">{t("loading")}</p>}
-          <ProductGrid products={store.products} total={total} compareIds={store.compareIds} onCompare={store.toggleCompare} onAdd={add} onDetail={showDetail} />
-          {total > (query.pageSize || 12) && <div className="mt-12 flex items-center justify-center gap-4 text-xs">
-            <button disabled={(query.page || 1) <= 1} onClick={() => setQuery((current) => ({ ...current, page: (current.page || 1) - 1 }))} className="border border-ink/15 px-4 py-2 disabled:opacity-30">{t("previous")}</button>
-            <span>{t("page", { current: query.page || 1, total: Math.ceil(total / (query.pageSize || 12)) })}</span>
-            <button disabled={(query.page || 1) >= Math.ceil(total / (query.pageSize || 12))} onClick={() => setQuery((current) => ({ ...current, page: (current.page || 1) + 1 }))} className="border border-ink/15 px-4 py-2 disabled:opacity-30">{t("next")}</button>
-          </div>}
-        </section>
-      </main>
+  const collection = (
+    <ProductCollection
+      products={catalogProducts} total={total} loading={loading} facets={facets} query={query} compareIds={store.compareIds}
+      onChange={changeQuery} onClear={clearQuery} onCompare={store.toggleCompare} onAdd={add} onDetail={showDetail}
+    />
+  );
 
-      {store.compareIds.length >= 2 && (
-        <div className="fixed bottom-5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-4 bg-ink px-5 py-3 text-white shadow-xl">
-          <GitCompareArrows size={16} /><span className="text-xs">{t("selected", { count: store.compareIds.length })}</span>
-          <button onClick={openCompare} className="border-l border-white/20 pl-4 text-[11px] uppercase tracking-wider text-[#f2d6d0]">{t("compareStart")}</button>
-          <button onClick={store.clearCompare} className="text-[11px] text-white/55">{t("clear")}</button>
-        </div>
-      )}
-      {notice && <button onClick={() => setNotice("")} className="fixed bottom-5 right-5 z-40 bg-paper px-4 py-3 text-xs shadow-xl ring-1 ring-ink/10">{notice}</button>}
-      <CartDrawer
-        open={cartOpen}
-        cart={store.cart}
-        authenticated={Boolean(store.user)}
-        onClose={() => setCartOpen(false)}
-        onLogin={() => { setCartOpen(false); setAuthOpen(true); }}
-        onRemove={async (id) => {
-          if (!store.accessToken) return;
-          try {
-            await removeCart(store.accessToken, id);
-            store.setCart(await fetchCart(store.accessToken));
-          } catch (error) {
-            setNotice(error instanceof Error ? error.message : t("removeFailed"));
-          }
-        }}
-        onClear={emptyCart}
-      />
-      <AuthDrawer open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
-      <CompareDrawer open={compareOpen} products={store.comparison} onClose={() => setCompareOpen(false)} />
-      <ProductDetailDrawer open={Boolean(detail)} product={detail} onClose={() => setDetail(null)} onAdd={add} />
-      <StylistDrawer open={stylistOpen} onClose={() => setStylistOpen(false)} messages={store.messages} streaming={store.streaming} slots={store.slots} traces={store.traces} decision={store.decision} pendingAction={store.pendingAction} wardrobe={store.wardrobe} wardrobePlan={store.wardrobePlan} products={store.products} onPlanEdit={editWardrobePlan} onPlanAccept={acceptWardrobePlan} onConfirm={confirmPendingAction} onSubmit={submit} onCancel={cancelChat} />
-    </div>
+  const loadingPage = <div className="page-loading"><span />{t("loading")}</div>;
+  const appProducts = editorialProducts.length ? editorialProducts : catalogProducts;
+  const pageContent = pathname === "/" ? (
+    <HomeScreen products={appProducts} agentState={agentState} events={agentEvents} wardrobe={store.wardrobe} onAgent={() => transitionNavigate("/agent")} onWardrobe={() => transitionNavigate("/wardrobe")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
+  ) : pathname === "/wardrobe" ? (
+    <WardrobeScreen user={store.user} wardrobe={store.wardrobe} inspiration={[...appProducts, ...catalogProducts]} onLogin={() => setAuthOpen(true)} onDetail={showDetail} />
+  ) : pathname === "/discover" ? (
+    collection
+  ) : pathname === "/profile" ? (
+    <ProfileScreen user={store.user} cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)} wardrobeCount={store.wardrobe?.items.length || 0} compareCount={store.compareIds.length} onAuth={() => setAuthOpen(true)} onLogout={logout} />
+  ) : pathname.startsWith("/product/") ? (
+    <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} onAskAgent={(message) => { lastAgentRequest.current = { message, image: null, preview: null }; transitionNavigate("/agent"); window.setTimeout(() => submitAgent(message, null, null), 420); }} /> : loadingPage}</Suspense>
+  ) : pathname === "/compare" ? (
+    <Suspense fallback={loadingPage}><CompareWorkspace products={store.comparison.length ? store.comparison : catalogProducts.filter((product) => store.compareIds.includes(product.article_id))} onClose={() => transitionNavigate("/discover")} onRemove={store.toggleCompare} onDetail={showDetail} /></Suspense>
+  ) : pathname === "/agent" ? (
+    <Suspense fallback={loadingPage}><AgentWorkspace messages={store.messages} streaming={store.streaming} state={agentState} events={agentEvents} slots={store.slots} traces={store.traces} products={agentProducts} evidence={agentEvidence} decision={store.decision} pendingAction={store.pendingAction} wardrobe={store.wardrobe} wardrobePlan={store.wardrobePlan} error={agentError} onClose={() => transitionNavigate("/")} onSubmit={submitAgent} onCancel={cancelAgent} onRetry={retryAgent} onConfirm={confirmPendingAction} onPlanAccept={acceptWardrobePlan} onPlanEdit={editWardrobePlan} onDetail={showDetail} /></Suspense>
+  ) : (
+    <HomeScreen products={appProducts} agentState={agentState} events={agentEvents} wardrobe={store.wardrobe} onAgent={() => transitionNavigate("/agent")} onWardrobe={() => transitionNavigate("/wardrobe")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
+  );
+
+  const rootScreen = ["/", "/wardrobe", "/agent", "/discover", "/profile"].includes(pathname);
+  const cartCount = store.cart.reduce((count, item) => count + item.quantity, 0);
+
+  return (
+    <LayoutGroup>
+      <div className={`app-shell route-${pathname.split("/")[1] || "home"}`}>
+        {rootScreen && pathname !== "/agent" && <AppTopBar pathname={pathname} user={store.user} cartCount={cartCount} onCart={() => setCartOpen(true)} onProfile={() => transitionNavigate("/profile")} />}
+        <AnimatePresence mode="wait" initial={false}>
+          <PageTransition key={pathname}>{pageContent}</PageTransition>
+        </AnimatePresence>
+
+        {rootScreen && <BottomNavigation pathname={pathname} onNavigate={transitionNavigate} />}
+
+        <AnimatePresence>
+          {store.compareIds.length >= 2 && !pathname.startsWith("/compare") && (
+            <motion.div className="compare-tray" initial={{ y: 90, x: "-50%", opacity: 0 }} animate={{ y: 0, x: "-50%", opacity: 1 }} exit={{ y: 80, x: "-50%", opacity: 0 }} transition={motionTokens.spring.drawer}>
+              <GitCompareArrows size={15} />
+              <div>{catalogProducts.filter((product) => store.compareIds.includes(product.article_id)).map((product) => <motion.img layoutId={`compare-thumb-${product.article_id}`} key={product.article_id} src={productImage(product)} alt="" />)}</div>
+              <span>{t("selected", { count: store.compareIds.length })}</span><button onClick={openCompare}>{t("compareStart")}</button><button onClick={store.clearCompare} aria-label={t("clear")}><X size={14} /></button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <CartDrawer open={cartOpen} authenticated={Boolean(store.user)} cart={store.cart} onClose={() => setCartOpen(false)} onLogin={() => { setCartOpen(false); setAuthOpen(true); }} onRemove={async (id) => { if (!store.accessToken) return; try { await removeCart(store.accessToken, id); store.setCart(await fetchCart(store.accessToken)); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onClear={emptyCart} />
+        <AuthOverlay open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
+        <CartFlight flight={flight} />
+        <NetworkNotice />
+        <AnimatePresence>{notice && <motion.button className="toast" onClick={() => setNotice("")} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}>{notice}<span>×</span></motion.button>}</AnimatePresence>
+      </div>
+    </LayoutGroup>
   );
 }

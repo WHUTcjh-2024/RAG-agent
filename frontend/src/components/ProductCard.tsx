@@ -1,25 +1,118 @@
-import { Check, GitCompareArrows, Plus } from "lucide-react";
+import { useState } from "react";
+import { motion, useMotionValue, useSpring, useTransform } from "motion/react";
+import { Check, GitCompareArrows, Heart, Plus } from "lucide-react";
 import { productImage } from "../api/client";
 import { useTranslation } from "../i18n";
+import { useMotionSystem } from "../motion/MotionSystem";
+import { motionTokens } from "../motion/tokens";
 import type { Product } from "../types";
 
-type Props = { product: Product; index: number; selected: boolean; onCompare: () => void; onAdd: () => void; onDetail: () => void };
+type Props = {
+  product: Product;
+  index: number;
+  featured?: boolean;
+  selected: boolean;
+  onCompare: (id: string) => void;
+  onAdd: (id: string, origin: DOMRect) => Promise<boolean>;
+  onDetail: (id: string) => void;
+};
 
-export function ProductCard({ product, index, selected, onCompare, onAdd, onDetail }: Props) {
+export function ProductCard({ product, index, featured, selected, onCompare, onAdd, onDetail }: Props) {
   const { t } = useTranslation();
-  return <article data-testid="product-card" className="product-card group animate-reveal" style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}>
-    <div className="relative aspect-[3/4] overflow-hidden bg-[#e8e4dc]">
-      <button onClick={onDetail} className="h-full w-full" aria-label={t("viewDetails", { name: product.prod_name })}><img src={productImage(product)} alt={product.prod_name} loading="lazy" className="h-full w-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.035]" /></button>
-      <span className="absolute left-3 top-3 bg-paper/90 px-2 py-1 font-mono text-[9px]">{String(index + 1).padStart(2, "0")}</span>
-      {typeof product.score === "number" && <span className="absolute bottom-3 left-3 bg-ink/85 px-2 py-1 text-[9px] text-white">{t("match")} {Math.round(product.score * 100)}%</span>}
-      <div className="absolute bottom-3 right-3 flex gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100">
-        <button className="grid h-9 w-9 place-items-center bg-paper" onClick={onCompare} aria-label={t("addCompare")}>{selected ? <Check size={15} /> : <GitCompareArrows size={15} />}</button>
-        <button className="grid h-9 w-9 place-items-center bg-accent text-white" onClick={onAdd} aria-label={t("addCart")}><Plus size={16} /></button>
+  const { capability } = useMotionSystem();
+  const [favorite, setFavorite] = useState(false);
+  const [added, setAdded] = useState(false);
+  const pointerX = useMotionValue(0);
+  const pointerY = useMotionValue(0);
+  const smoothX = useSpring(pointerX, { stiffness: 180, damping: 26 });
+  const smoothY = useSpring(pointerY, { stiffness: 180, damping: 26 });
+  const imageX = useTransform(smoothX, [-0.5, 0.5], ["-2.5%", "2.5%"]);
+  const imageY = useTransform(smoothY, [-0.5, 0.5], ["-2%", "2%"]);
+  const score = typeof product.score === "number" ? Math.round(product.score * 100) : null;
+
+  const move = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (capability !== "full") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    pointerX.set((event.clientX - rect.left) / rect.width - 0.5);
+    pointerY.set((event.clientY - rect.top) / rect.height - 0.5);
+  };
+
+  const add = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    const success = await onAdd(product.article_id, event.currentTarget.getBoundingClientRect());
+    if (!success) return;
+    setAdded(true);
+    window.setTimeout(() => setAdded(false), 1600);
+  };
+
+  return (
+    <motion.article
+      data-testid="product-card"
+      layout
+      layoutId={`product-card-${product.article_id}`}
+      className={featured ? "product-card product-card-featured" : "product-card"}
+      initial={{ opacity: 0, y: index % 2 ? 28 : 44, clipPath: "inset(0 0 12% 0)" }}
+      animate={{ opacity: 1, y: 0, clipPath: "inset(0 0 0% 0)" }}
+      exit={{ opacity: 0, scale: 0.96, filter: "blur(7px)" }}
+      transition={{ layout: motionTokens.spring.layout, delay: Math.min(index, 8) * motionTokens.stagger.tight }}
+    >
+      <div
+        className="product-media"
+        onPointerMove={move}
+        onPointerLeave={() => { pointerX.set(0); pointerY.set(0); }}
+      >
+        <motion.button
+          className="product-image-button"
+          onClick={() => onDetail(product.article_id)}
+          aria-label={t("viewDetails", { name: product.prod_name })}
+          whileTap={{ scale: motionTokens.scale.press }}
+        >
+          <motion.img
+            layoutId={`product-media-${product.article_id}`}
+            src={productImage(product)}
+            alt={product.prod_name}
+            loading="lazy"
+            style={{ x: imageX, y: imageY }}
+          />
+          <span className="image-focus" aria-hidden="true" />
+        </motion.button>
+        <span className="product-index">{String(index + 1).padStart(2, "0")}</span>
+        <button
+          className={favorite ? "favorite-button is-active" : "favorite-button"}
+          onClick={() => setFavorite((value) => !value)}
+          aria-label={favorite ? t("unfavorite") : t("favorite")}
+        >
+          <motion.span animate={{ scale: favorite ? [1, 0.78, 1.08, 1] : 1 }}><Heart size={16} fill={favorite ? "currentColor" : "none"} /></motion.span>
+        </button>
+        <div className="product-card-actions">
+          <button
+            className={selected ? "card-action is-active" : "card-action"}
+            onClick={() => onCompare(product.article_id)}
+            aria-label={t("addCompare")}
+            aria-pressed={selected}
+          >
+            {selected ? <Check size={15} /> : <GitCompareArrows size={15} />}
+          </button>
+          <button className={added ? "card-action add-action is-success" : "card-action add-action"} onClick={add} aria-label={t("addCart")}>
+            <motion.span key={added ? "done" : "add"} initial={{ scale: 0.5, rotate: -20 }} animate={{ scale: 1, rotate: 0 }}>
+              {added ? <Check size={16} /> : <Plus size={16} />}
+            </motion.span>
+          </button>
+        </div>
+        {score !== null && (
+          <div className="match-orbit" aria-label={`${t("match")} ${score}%`}>
+            <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" /><motion.circle cx="20" cy="20" r="17" initial={{ pathLength: 0 }} animate={{ pathLength: score / 100 }} transition={{ duration: 0.8, ease: motionTokens.easing.enter }} /></svg>
+            <span>{score}</span>
+          </div>
+        )}
       </div>
-    </div>
-    <div className="pt-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><button onClick={onDetail} className="block max-w-full truncate text-left text-sm font-medium hover:text-accent">{product.prod_name}</button><p className="mt-1 text-xs text-muted">{product.product_type_name} · {product.colour_group_name}</p></div><button onClick={onAdd} className="mt-0.5 text-muted hover:text-accent"><Plus size={16} /></button></div>
-      {product.reason && <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted">{product.reason}</p>}
-      {product.price_info && <p className="mt-2 font-mono text-[10px] text-muted">{t("dataPriceShort")} {product.price_info.amount.toFixed(4)} · {product.price_info.currency}</p>}
-    </div>
-  </article>;
+      <div className="product-information">
+        <div>
+          <p className="product-taxonomy">{product.product_type_name || product.product_group_name} · {product.colour_group_name}</p>
+          <button className="product-name" onClick={() => onDetail(product.article_id)}>{product.prod_name}</button>
+        </div>
+        {product.price_info && <p className="product-price">{product.price_info.amount.toFixed(4)}<small>{product.price_info.currency}</small></p>}
+        {product.reason && <motion.div className="product-reason" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><span>{t("recommendationReason")}</span><p>{product.reason}</p></motion.div>}
+      </div>
+    </motion.article>
+  );
 }

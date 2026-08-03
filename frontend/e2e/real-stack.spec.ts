@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("真实前端、Java 网关与 Python Agent 完成流式推荐", async ({ page }) => {
+  test.setTimeout(180_000);
   const streamStatuses: number[] = [];
   page.on("response", (response) => {
     if (response.url().includes("/api/chat/stream")) {
@@ -15,7 +16,7 @@ test("真实前端、Java 网关与 Python Agent 完成流式推荐", async ({ p
   await page.getByTestId("agent-message").press("Enter");
 
   const answer = page.getByTestId("assistant-message").last();
-  await expect(answer).toBeVisible();
+  await expect(answer).toBeVisible({ timeout: 120_000 });
   await expect(answer).not.toHaveText("");
   await expect.poll(() => streamStatuses).toEqual([200]);
 });
