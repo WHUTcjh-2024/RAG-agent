@@ -18,8 +18,10 @@ def _stringify_row(row: dict[object, object]) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in row.items()}
 
 
-def load_metadata_rows(path: Path) -> list[dict[str, str]]:
-    """Load supported catalog metadata formats into string-valued dictionaries."""
+def load_metadata_rows(
+    path: Path, *, required_columns: set[str] | None = None
+) -> list[dict[str, str]]:
+    """Load supported metadata, optionally requiring CSV header columns."""
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_METADATA_SUFFIXES:
         raise ValueError("Metadata must be .csv, .jsonl, .ndjson, or .json")
@@ -29,6 +31,12 @@ def load_metadata_rows(path: Path) -> list[dict[str, str]]:
             reader = csv.DictReader(handle)
             if not reader.fieldnames:
                 raise ValueError("CSV metadata must have a header")
+            missing_columns = sorted(set(required_columns or ()) - set(reader.fieldnames))
+            if missing_columns:
+                raise ValueError(
+                    "CSV metadata is missing required columns: "
+                    + ", ".join(missing_columns)
+                )
             return [_stringify_row(row) for row in reader]
 
     if suffix in {".jsonl", ".ndjson"}:

@@ -36,6 +36,29 @@ def test_load_metadata_rows_reads_csv_and_jsonl(tmp_path: Path) -> None:
     ]
 
 
+def test_load_metadata_rows_reads_json_object_array(tmp_path: Path) -> None:
+    json_path = tmp_path / "catalog.json"
+    json_path.write_text(
+        json.dumps([{"id": 4, "name": "连衣裙"}, {"id": "5", "name": None}]),
+        encoding="utf-8",
+    )
+
+    assert load_metadata_rows(json_path) == [
+        {"id": "4", "name": "连衣裙"},
+        {"id": "5", "name": ""},
+    ]
+
+
+def test_load_metadata_rows_rejects_headerless_csv_with_required_columns(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "headerless.csv"
+    csv_path.write_text("1,棉质衬衫\n2,羊毛外套\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="CSV metadata is missing required columns: id, name"):
+        load_metadata_rows(csv_path, required_columns={"id", "name"})
+
+
 def test_load_metadata_rows_rejects_invalid_formats(tmp_path: Path) -> None:
     unsupported = tmp_path / "catalog.txt"
     unsupported.write_text("id,name\n1,shirt\n", encoding="utf-8")
@@ -83,6 +106,11 @@ def test_normalize_products_keeps_only_valid_records(tmp_path: Path) -> None:
             "source_image": "shirt.JPG",
         },
         {
+            "source_id": "11",
+            "source_name": "重复源图片",
+            "source_image": "shirt.JPG",
+        },
+        {
             "source_id": "10",
             "source_name": "越界图片",
             "source_image": "../outside.jpg",
@@ -121,3 +149,4 @@ def test_normalize_products_keeps_only_valid_records(tmp_path: Path) -> None:
         }
     ]
     assert set(products[0]).issuperset(PRODUCT_FIELDS)
+    assert "0000000011" not in {product["article_id"] for product in products}
