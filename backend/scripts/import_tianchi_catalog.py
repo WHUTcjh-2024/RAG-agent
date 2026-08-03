@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
+import random
+import shutil
+import tempfile
+import uuid
 
 from PIL import Image, UnidentifiedImageError
 
-from scripts.data_utils import clean_text, normalize_article_id
+from scripts.data_utils import (
+    PRODUCT_FIELDS,
+    clean_text,
+    normalize_article_id,
+    resolve_image_path,
+    write_csv,
+    write_json,
+)
 
 
 SUPPORTED_METADATA_SUFFIXES = {".csv", ".jsonl", ".ndjson", ".json"}
@@ -134,3 +146,173 @@ def normalize_products(
         seen_images.add(source_image)
 
     return products
+
+
+def sample_products(
+    products: list[dict[str, str]], sample_size: int, seed: int
+) -> list[dict[str, str]]:
+    """Return a deterministic, product-group-balanced sample."""
+    if sample_size <= 0:
+        raise ValueError("sample_size must be greater than zero")
+    if len(products) < sample_size:
+        raise ValueError(f"Only {len(products)} valid products; need {sample_size}")
+
+    buckets: dict[str, list[dict[str, str]]] = {}
+    for product in products:
+        buckets.setdefault(product.get("product_group_name", ""), []).append(product)
+
+    randomizer = random.Random(seed)
+    for group in buckets:
+        buckets[group] = sorted(buckets[group], key=lambda product: product["article_id"])
+        randomizer.shuffle(buckets[group])
+
+    selected: list[dict[str, str]] = []
+    groups = sorted(buckets)
+    while len(selected) < sample_size:
+        for group in groups:
+            if buckets[group]:
+                selected.append(buckets[group].pop())
+                if len(selected) == sample_size:
+                    break
+
+    return sorted(selected, key=lambda product: product["article_id"])
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _validate_or_raise(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def validate_output(output_dir: Path, expected_count: int) -> dict[str, int]:
+    """Validate the CSV/image output contract before or after publication."""
+    csv_path = output_dir / "articles_sample.csv"
+    images_dir = output_dir / "images"
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            _validate_or_raise(reader.fieldnames is not None, "CSV has no header")
+            rows = list(reader)
+    except (OSError, csv.Error) as error:
+        raise RuntimeError(f"Unable to read catalog CSV: {csv_path}") from error
+
+    _validate_or_raise(
+        len(rows) == expected_count,
+        f"Expected {expected_count} CSV rows; found {len(rows)}",
+    )
+    article_ids = [row.get("article_id", "") for row in rows]
+    _validate_or_raise(
+        len(article_ids) == len(set(article_ids)), "CSV contains duplicate article_id values"
+    )
+
+    for row in rows:
+        image_path = row.get("image_path", "")
+        _validate_or_raise(
+            image_path.startswith("images/"),
+            f"Image path must start with images/: {image_path}",
+        )
+        try:
+            image_file = resolve_image_path(output_dir, image_path)
+        except ValueError as error:
+            raise RuntimeError(f"Invalid image path: {image_path}") from error
+        _validate_or_raise(
+            image_file.is_file() and image_file.stat().st_size > 0,
+            f"Missing or empty image: {image_path}",
+        )
+
+    image_files = [path for path in images_dir.rglob("*") if path.is_file()]
+    _validate_or_raise(
+        len(image_files) == expected_count,
+        f"Expected {expected_count} image files; found {len(image_files)}",
+    )
+    return {"products": expected_count, "images": expected_count}
+
+
+def _restore_previous_output(
+    promoted: list[Path], backups: list[tuple[Path, Path]]
+) -> None:
+    for path in reversed(promoted):
+        _remove_path(path)
+    for target, backup in reversed(backups):
+        backup.rename(target)
+
+
+def write_catalog(
+    selected: list[dict[str, str]], output_dir: Path, source_name: str, seed: int
+) -> dict[str, int]:
+    """Write a verified catalog through a temporary directory and reversible swap."""
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    temporary_dir = Path(
+        tempfile.mkdtemp(prefix=".tianchi_catalog_", dir=output_dir.parent)
+    )
+    temporary_csv = temporary_dir / "articles_sample.csv"
+    temporary_images = temporary_dir / "images"
+    temporary_manifest = temporary_dir / "catalog_manifest.json"
+    expected_count = len(selected)
+
+    try:
+        temporary_images.mkdir()
+        rows: list[dict[str, str]] = []
+        for product in selected:
+            source_image = Path(product["source_image"])
+            image_name = f"{product['article_id']}{source_image.suffix}"
+            shutil.copy2(source_image, temporary_images / image_name)
+            rows.append(
+                {
+                    **product,
+                    "image_path": f"images/{image_name}",
+                }
+            )
+
+        write_csv(temporary_csv, rows, list(PRODUCT_FIELDS))
+        write_json(
+            temporary_manifest,
+            {
+                "source": source_name,
+                "seed": seed,
+                "product_count": expected_count,
+                "image_count": expected_count,
+                "articles_sha256": hashlib.sha256(
+                    temporary_csv.read_bytes()
+                ).hexdigest(),
+            },
+        )
+        validate_output(temporary_dir, expected_count)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        backup_token = uuid.uuid4().hex
+        targets = (
+            (output_dir / "images", temporary_images),
+            (output_dir / "articles_sample.csv", temporary_csv),
+            (output_dir / "catalog_manifest.json", temporary_manifest),
+        )
+        backups: list[tuple[Path, Path]] = []
+        promoted: list[Path] = []
+        try:
+            for target, _ in targets:
+                if target.exists():
+                    backup = target.with_name(
+                        f".tianchi_catalog_backup_{backup_token}_{target.name}"
+                    )
+                    target.rename(backup)
+                    backups.append((target, backup))
+            for target, temporary in targets:
+                temporary.rename(target)
+                promoted.append(target)
+            validate_output(output_dir, expected_count)
+        except Exception:
+            _restore_previous_output(promoted, backups)
+            raise
+        else:
+            for _, backup in backups:
+                _remove_path(backup)
+
+        return {"products": expected_count, "images": expected_count}
+    finally:
+        _remove_path(temporary_dir)

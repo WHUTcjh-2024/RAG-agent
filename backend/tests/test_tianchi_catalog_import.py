@@ -8,7 +8,13 @@ import pytest
 from PIL import Image
 
 from scripts.data_utils import PRODUCT_FIELDS
-from scripts.import_tianchi_catalog import load_metadata_rows, normalize_products
+from scripts.import_tianchi_catalog import (
+    load_metadata_rows,
+    normalize_products,
+    sample_products,
+    validate_output,
+    write_catalog,
+)
 
 
 def create_image(path: Path) -> None:
@@ -150,3 +156,177 @@ def test_normalize_products_keeps_only_valid_records(tmp_path: Path) -> None:
     ]
     assert set(products[0]).issuperset(PRODUCT_FIELDS)
     assert "0000000011" not in {product["article_id"] for product in products}
+
+
+def test_sample_products_is_deterministic_and_independent_of_input_order() -> None:
+    products = [
+        {"article_id": f"000000000{index}", "product_group_name": group}
+        for group, index in (
+            ("tops", 1),
+            ("tops", 2),
+            ("tops", 3),
+            ("bottoms", 4),
+            ("bottoms", 5),
+            ("bottoms", 6),
+        )
+    ]
+
+    selected = sample_products(products, sample_size=4, seed=19)
+
+    assert selected == sample_products(list(reversed(products)), sample_size=4, seed=19)
+    assert [product["article_id"] for product in selected] == sorted(
+        product["article_id"] for product in selected
+    )
+    assert sum(product["product_group_name"] == "tops" for product in selected) == 2
+    assert sum(product["product_group_name"] == "bottoms" for product in selected) == 2
+
+
+@pytest.mark.parametrize(
+    ("sample_size", "message"),
+    [
+        (0, "sample_size must be greater than zero"),
+        (3, "Only 2 valid products; need 3"),
+    ],
+)
+def test_sample_products_rejects_invalid_requested_size(
+    sample_size: int, message: str
+) -> None:
+    products = [
+        {"article_id": "0000000001", "product_group_name": "tops"},
+        {"article_id": "0000000002", "product_group_name": "tops"},
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        sample_products(products, sample_size=sample_size, seed=19)
+
+
+def test_sample_failure_does_not_modify_existing_output(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    legacy_csv = output_dir / "articles_sample.csv"
+    legacy_csv.write_text("legacy csv", encoding="utf-8")
+    legacy_image = output_dir / "images" / "legacy.png"
+    legacy_image.parent.mkdir()
+    legacy_image.write_bytes(b"legacy image")
+    products = [{"article_id": "0000000001", "product_group_name": "tops"}]
+
+    with pytest.raises(ValueError, match="Only 1 valid products; need 2"):
+        sample_products(products, sample_size=2, seed=19)
+
+    assert legacy_csv.read_text(encoding="utf-8") == "legacy csv"
+    assert legacy_image.read_bytes() == b"legacy image"
+
+
+def test_write_catalog_creates_valid_catalog_and_manifest(tmp_path: Path) -> None:
+    first_source = tmp_path / "source" / "shirt.png"
+    second_source = tmp_path / "source" / "trousers.jpg"
+    create_image(first_source)
+    create_image(second_source)
+    selected = [
+        {
+            **{field: "" for field in PRODUCT_FIELDS},
+            "article_id": "0000000001",
+            "product_code": "0000000001",
+            "prod_name": "shirt",
+            "product_group_name": "tops",
+            "image_path": "images/0000000001.png",
+            "source_image": str(first_source),
+        },
+        {
+            **{field: "" for field in PRODUCT_FIELDS},
+            "article_id": "0000000002",
+            "product_code": "0000000002",
+            "prod_name": "trousers",
+            "product_group_name": "bottoms",
+            "image_path": "images/0000000002.jpg",
+            "source_image": str(second_source),
+        },
+    ]
+    output_dir = tmp_path / "output"
+
+    assert write_catalog(selected, output_dir, source_name="tianchi", seed=19) == {
+        "products": 2,
+        "images": 2,
+    }
+    assert validate_output(output_dir, expected_count=2) == {
+        "products": 2,
+        "images": 2,
+    }
+    with (output_dir / "articles_sample.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        assert csv.DictReader(handle).fieldnames == list(PRODUCT_FIELDS)
+    manifest = json.loads((output_dir / "catalog_manifest.json").read_text("utf-8"))
+    assert manifest["source"] == "tianchi"
+    assert manifest["seed"] == 19
+    assert manifest["product_count"] == 2
+    assert manifest["image_count"] == 2
+    assert len(manifest["articles_sha256"]) == 64
+    assert set(manifest["articles_sha256"]) <= set("0123456789abcdef")
+
+
+def test_validate_output_rejects_csv_with_missing_image(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    row = {field: "" for field in PRODUCT_FIELDS}
+    row.update({"article_id": "0000000001", "image_path": "images/missing.png"})
+    with (output_dir / "articles_sample.csv").open(
+        "w", encoding="utf-8-sig", newline=""
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=PRODUCT_FIELDS)
+        writer.writeheader()
+        writer.writerow(row)
+
+    with pytest.raises(RuntimeError):
+        validate_output(output_dir, expected_count=1)
+
+
+def test_load_metadata_rows_accepts_final_required_columns(tmp_path: Path) -> None:
+    csv_path = tmp_path / "catalog.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["item_id", "title", "image"])
+        writer.writeheader()
+        writer.writerow({"item_id": "1", "title": "shirt", "image": "shirt.png"})
+
+    assert load_metadata_rows(
+        csv_path, required_columns={"item_id", "title", "image"}
+    ) == [{"item_id": "1", "title": "shirt", "image": "shirt.png"}]
+
+
+def test_write_catalog_restores_existing_output_when_promotion_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_image = tmp_path / "source" / "shirt.png"
+    create_image(source_image)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    legacy_csv = output_dir / "articles_sample.csv"
+    legacy_csv.write_text("legacy csv", encoding="utf-8")
+    legacy_image = output_dir / "images" / "legacy.png"
+    legacy_image.parent.mkdir()
+    legacy_image.write_bytes(b"legacy image")
+    legacy_manifest = output_dir / "catalog_manifest.json"
+    legacy_manifest.write_text("legacy manifest", encoding="utf-8")
+    selected = [
+        {
+            **{field: "" for field in PRODUCT_FIELDS},
+            "article_id": "0000000001",
+            "image_path": "images/0000000001.png",
+            "source_image": str(source_image),
+        }
+    ]
+    original_rename = Path.rename
+
+    def fail_manifest_promotion(path: Path, target: Path) -> Path:
+        if target == output_dir / "catalog_manifest.json" and path.parent != output_dir:
+            raise OSError("simulated promotion failure")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_manifest_promotion)
+
+    with pytest.raises(OSError, match="simulated promotion failure"):
+        write_catalog(selected, output_dir, source_name="tianchi", seed=19)
+
+    assert legacy_csv.read_text(encoding="utf-8") == "legacy csv"
+    assert legacy_image.read_bytes() == b"legacy image"
+    assert legacy_manifest.read_text(encoding="utf-8") == "legacy manifest"
