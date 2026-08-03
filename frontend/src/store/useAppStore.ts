@@ -28,6 +28,7 @@ type AppState = {
   appendAssistant: (delta: string) => void;
   setProducts: (products: Product[]) => void;
   addTrace: (trace: ToolTrace) => void;
+  resetExecution: () => void;
   setSlots: (slots: Slots) => void;
   setAuth: (accessToken: string, user: User | null) => void;
   setCart: (cart: CartItem[]) => void;
@@ -69,6 +70,7 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   setProducts: (products) => set({ products }),
   addTrace: (trace) => set((state) => ({ traces: [...state.traces, trace].slice(-8) })),
+  resetExecution: () => set({ traces: [], comparison: [], decision: null, pendingAction: null, wardrobePlan: null }),
   setSlots: (slots) => set({ slots }),
   setAuth: (token, user) => {
     if (token) localStorage.setItem("atelier-access-token", token);

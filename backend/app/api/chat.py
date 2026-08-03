@@ -67,8 +67,29 @@ def get_orchestrator() -> ShoppingAgentOrchestrator:
     image_index = Path(os.getenv("IMAGE_INDEX_DIR", str(data_dir / "image")))
     device = os.getenv("IMAGE_DEVICE", "auto")
     text_retriever = TextRetriever(text_index)
-    image_retriever = ImageRetriever(image_index, device=device)
-    hybrid_retriever = HybridRetriever(text_index, image_index, image_device=device)
+    required_image_files = ("metadata.json", "embeddings.npy", "products.jsonl")
+    missing_image_files = [
+        filename
+        for filename in required_image_files
+        if not (image_index / filename).is_file()
+    ]
+    if missing_image_files:
+        logger.warning(
+            "agent_image_retrieval_disabled index_dir=%s missing=%s",
+            image_index,
+            ",".join(missing_image_files),
+        )
+        image_retriever = None
+        hybrid_retriever = None
+    else:
+        image_retriever = ImageRetriever(image_index, device=device)
+        hybrid_retriever = HybridRetriever(
+            text_index,
+            image_index,
+            image_device=device,
+            text_retriever=text_retriever,
+            image_retriever=image_retriever,
+        )
     return ShoppingAgentOrchestrator(
         text_retriever=text_retriever,
         image_retriever=image_retriever,

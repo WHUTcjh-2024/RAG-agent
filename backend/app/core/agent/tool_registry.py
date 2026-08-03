@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from pathlib import Path
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -75,15 +74,17 @@ class CommerceToolset:
     def __init__(
         self,
         text_retriever,
-        image_retriever,
-        hybrid_retriever,
         memory: AgentMemoryStore,
+        image_retriever=None,
+        hybrid_retriever=None,
     ) -> None:
         self.text_retriever = text_retriever
         self.image_retriever = image_retriever
         self.hybrid_retriever = hybrid_retriever
         self.memory = memory
-        products = list(text_retriever.products) + list(image_retriever.products)
+        products = list(text_retriever.products)
+        if image_retriever is not None:
+            products.extend(image_retriever.products)
         self.catalog = {
             str(product["article_id"]): enrich_commerce_fields(product)
             for product in products
@@ -97,16 +98,18 @@ class CommerceToolset:
             "Search real catalog products using text and structured filters.",
             self.search_products_by_text,
         )
-        registry.register(
-            "search_products_by_image",
-            "Search visually similar real products from an uploaded local image.",
-            self.search_products_by_image,
-        )
-        registry.register(
-            "hybrid_search",
-            "Fuse text, uploaded image, structured filters, and popularity.",
-            self.hybrid_search,
-        )
+        if self.image_retriever is not None:
+            registry.register(
+                "search_products_by_image",
+                "Search visually similar real products from an uploaded local image.",
+                self.search_products_by_image,
+            )
+        if self.hybrid_retriever is not None:
+            registry.register(
+                "hybrid_search",
+                "Fuse text, uploaded image, structured filters, and popularity.",
+                self.hybrid_search,
+            )
         registry.register(
             "get_product_detail",
             "Return one real catalog product by article_id.",

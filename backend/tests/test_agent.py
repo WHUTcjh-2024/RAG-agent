@@ -168,3 +168,45 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
         assert "event: done" in stream.text
         assert stream.headers["X-Request-Id"]
     get_orchestrator.cache_clear()
+
+
+def test_text_agent_works_without_optional_image_index(
+    tmp_path: Path, monkeypatch
+) -> None:
+    text_index, _, query_image = build_fixture_indexes(tmp_path / "fixtures")
+    missing_image_index = tmp_path / "missing-image-index"
+    monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))
+    monkeypatch.setenv("IMAGE_INDEX_DIR", str(missing_image_index))
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    get_orchestrator.cache_clear()
+
+    try:
+        orchestrator = get_orchestrator()
+        assert "search_products_by_text" in orchestrator.registry.names
+        assert "search_products_by_image" not in orchestrator.registry.names
+        assert "hybrid_search" not in orchestrator.registry.names
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/chat/stream",
+                data={"message": "Recommend a red shirt", "session_id": "text-only"},
+            )
+
+        assert response.status_code == 200
+        assert "event: products" in response.text
+        assert "event: message" in response.text
+        assert "event: done" in response.text
+        assert "event: error" not in response.text
+
+        with TestClient(app) as client, query_image.open("rb") as image:
+            unavailable = client.post(
+                "/api/chat/stream",
+                data={"message": "Find similar products", "session_id": "image-only"},
+                files={"file": ("query.jpg", image, "image/jpeg")},
+            )
+
+        assert unavailable.status_code == 200
+        assert '"code": "INDEX_NOT_READY"' in unavailable.text
+        assert "event: done" not in unavailable.text
+    finally:
+        get_orchestrator.cache_clear()

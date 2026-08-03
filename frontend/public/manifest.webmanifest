@@ -1,0 +1,19 @@
+{
+  "name": "FitMe 智能穿搭助手",
+  "short_name": "FitMe",
+  "description": "AI Agent 主导的穿搭与衣橱助手",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f7f5f2",
+  "theme_color": "#f7f5f2",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

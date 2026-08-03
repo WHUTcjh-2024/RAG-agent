@@ -82,6 +82,9 @@ jobs:
           AGENT_INTERNAL_TOKEN: atelier-real-e2e-ci-token
       - run: npm run test:e2e:real
         working-directory: frontend
+      - name: Print full-stack logs after a failure
+        if: failure()
+        run: docker compose logs --no-color
       - if: always()
         run: docker compose down --volumes
         env:

@@ -17,6 +17,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.api.search import get_image_retriever
+from app.core.image_encoder import PixelImageEncoder
+from app.core.retrieval import image_retriever as image_retriever_module
+from app.core.retrieval.image_retriever import ImageRetriever
 from app.main import app
 
 
@@ -91,6 +94,45 @@ def test_build_and_search_image_api(tmp_path: Path, monkeypatch) -> None:
     assert payload["results"][0]["article_id"] == "0000000001"
     assert payload["results"][0]["score"] > payload["results"][1]["score"]
     get_image_retriever.cache_clear()
+
+
+def test_image_encoder_is_loaded_lazily_and_reused(tmp_path: Path, monkeypatch) -> None:
+    csv_path, query_image = create_image_fixture(tmp_path)
+    index_dir = tmp_path / "image_index"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(BACKEND_DIR / "scripts" / "build_image_index.py"),
+            "--input_csv",
+            str(csv_path),
+            "--index_dir",
+            str(index_dir),
+            "--backend",
+            "pixel",
+        ],
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    encoder_creations = 0
+
+    def create_encoder(**kwargs) -> PixelImageEncoder:
+        nonlocal encoder_creations
+        encoder_creations += 1
+        image_size = round((int(kwargs["dimension"]) / 3) ** 0.5)
+        return PixelImageEncoder(image_size=image_size)
+
+    monkeypatch.setattr(image_retriever_module, "create_image_encoder", create_encoder)
+    retriever = ImageRetriever(index_dir, device="cpu")
+    assert encoder_creations == 0
+
+    with Image.open(query_image) as source:
+        image = source.convert("RGB")
+    retriever.search(image, top_k=1)
+    retriever.search(image, top_k=1)
+    assert encoder_creations == 1
 
 
 def test_image_api_rejects_invalid_file(tmp_path: Path, monkeypatch) -> None:
