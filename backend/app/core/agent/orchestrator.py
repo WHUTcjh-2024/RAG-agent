@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import logging
 import re
+from http import HTTPStatus
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from app.core.agent.contracts import AgentResponse, Intent, ToolTrace
+from app.core.agent.contracts import AgentResponse, ErrorCode, Intent, ToolTrace
 from app.core.agent.decision import (
     DecisionCardBuilder,
     DecisionFactsProvider,
     JavaDecisionFactsProvider,
 )
+from app.core.agent.errors import AgentException
 from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
 from app.core.agent.slot_extractor import SlotExtractor
@@ -95,6 +97,20 @@ class ShoppingAgentOrchestrator:
     def _invoke(
         self, traces: list[ToolTrace], tool: str, arguments: dict[str, Any]
     ) -> Any:
+        if (
+            tool == "search_products_by_image"
+            and self.toolset.image_retriever is None
+        ) or (
+            tool == "hybrid_search"
+            and self.toolset.hybrid_retriever is None
+        ):
+            raise AgentException(
+                ErrorCode.INDEX_NOT_READY,
+                "Image retrieval is unavailable because the image index is not ready.",
+                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+                retryable=True,
+                stage="retrieve_products",
+            )
         result = self.registry.invoke(tool, arguments)
         traces.append(self._trace(tool, arguments, result))
         return result
