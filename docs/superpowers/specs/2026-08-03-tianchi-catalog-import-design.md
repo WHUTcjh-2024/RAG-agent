@@ -69,8 +69,8 @@
 ## 部署方式
 
 1. 在开发机导入数据、构建 SQLite 库和文本索引。
-2. 将 `backend/data/sample/images/`、`backend/data/sample/articles_sample.csv`、`backend/data/sample/catalog_manifest.json`、`backend/data/sqlite/app.db` 与 `backend/data/vector_store/text/` 一并上传至虚拟机对应目录。
-3. 重建并重启 `backend` 服务；Java 和 frontend 服务无需因数据更新而重建。
+2. 将 `backend/data/sample/images/`、`backend/data/sample/articles_sample.csv`、`backend/data/sample/catalog_manifest.json` 与 `backend/data/sqlite/app.db` 上传至虚拟机对应目录；不上传 `backend/data/vector_store/text/`。
+3. 在重建前将虚拟机已有的 `backend/data/vector_store/text/` 移到仓库外、带时间戳的 `/root/catalog-backups/` 备份目录。Docker 在构建 `backend` 镜像时生成文本索引；Java 和 frontend 服务无需因数据更新而重建。
 4. 在虚拟机验证 `/api/products` 返回 5,000 条目录规模，并随机请求一个 `/media/...` 图片返回 `200`。
 
 ## 测试

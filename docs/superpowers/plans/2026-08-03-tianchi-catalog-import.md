@@ -331,15 +331,23 @@ Expected: FAIL，参数解析或出口码断言失败。
 3. 导入后执行：
 
 ```powershell
-backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py
+backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py --input_csv backend/data/sample/articles_sample.csv
 backend\.venv\Scripts\python.exe backend\scripts\build_text_index.py --backend hashing --force
 backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py
 ```
 
-4. 上传 `articles_sample.csv`、`images/`、`catalog_manifest.json`、`app.db` 和 `vector_store/text/` 到虚拟机后，只重建 `backend`：
+4. 上传 `articles_sample.csv`、`images/`、`catalog_manifest.json` 和 `app.db` 到虚拟机。不要上传 `vector_store/text/`；在构建前将虚拟机已有的索引移到仓库外、带时间戳的 `/root/catalog-backups/` 目录，Docker 会在构建 backend 镜像时生成文本索引：
 
 ```bash
+set -eu
 cd /root/RAG-agent
+index_dir=backend/data/vector_store/text
+if [ -e "$index_dir" ]; then
+  backup_dir="/root/catalog-backups/text-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p /root/catalog-backups
+  test ! -e "$backup_dir"
+  mv "$index_dir" "$backup_dir"
+fi
 docker compose build backend
 docker compose up -d backend
 curl --fail http://127.0.0.1:8080/api/products?page=1\&page_size=1
@@ -419,7 +427,9 @@ git check-ignore backend/data/sample/images backend/data/sqlite/app.db backend/d
 
 Expected: `git status` 中只出现源码、测试和文档；三条运行数据路径均被忽略。
 
-- [ ] **Step 5: 提交实际字段示例与发起中文 PR**
+- [ ] **Step 5: 备份旧索引后部署并发起中文 PR**
+
+将 `articles_sample.csv`、`images/`、`catalog_manifest.json` 和 `app.db` 上传至虚拟机。不要上传 `vector_store/text/`；Docker 构建会生成索引。在 `docker compose build backend` 前，将已有的 `backend/data/vector_store/text/` 移到仓库外、带时间戳的 `/root/catalog-backups/` 目录，再重建并重启 backend。
 
 仅提交脚本、测试和文档，不提交 `backend/data/` 中的原始包、图片、数据库或索引：
 

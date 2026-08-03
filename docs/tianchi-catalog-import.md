@@ -53,10 +53,18 @@ backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py
 
 将以下四类运行数据上传到虚拟机相应的 `backend/data/` 目录：`articles_sample.csv`、`images/`、`catalog_manifest.json` 和 `app.db`。这些文件不进入 Git。不要上传 `vector_store/text/`：Dockerfile 会在重建 backend 镜像时生成文本索引，预先存在的索引会导致构建失败。
 
-上传后只重建并重启 `backend` 服务：
+在重建 `backend` 前，先将虚拟机上已有的文本索引移到仓库外、带时间戳的备份目录。不要上传 `vector_store/text/`；Dockerfile 会在构建镜像时重新生成索引。
 
 ```bash
+set -eu
 cd /root/RAG-agent
+index_dir=backend/data/vector_store/text
+if [ -e "$index_dir" ]; then
+  backup_dir="/root/catalog-backups/text-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p /root/catalog-backups
+  test ! -e "$backup_dir"
+  mv "$index_dir" "$backup_dir"
+fi
 docker compose build backend
 docker compose up -d backend
 curl --fail 'http://127.0.0.1:8080/api/products?page=1&page_size=1'
