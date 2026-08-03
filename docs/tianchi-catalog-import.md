@@ -59,7 +59,7 @@ backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py
 set -eu
 cd /root/RAG-agent
 index_dir=backend/data/vector_store/text
-if [ -e "$index_dir" ]; then
+if [ -e "$index_dir" ] || [ -L "$index_dir" ]; then
   backup_dir="/root/catalog-backups/text-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p /root/catalog-backups
   test ! -e "$backup_dir"
