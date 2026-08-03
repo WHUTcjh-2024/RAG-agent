@@ -10,7 +10,18 @@
 Get-ChildItem backend\data\raw -Recurse -File
 ```
 
-元数据可以是 CSV、JSONL、NDJSON 或 JSON 对象数组。导入前请根据实际文件替换下面命令中的所有占位符，尤其是 ID、名称和图片相对路径字段名：
+元数据可以是 CSV、JSONL、NDJSON 或 JSON 对象数组。导入前请根据实际文件替换下面命令中的所有占位符，尤其是 ID、名称和图片相对路径字段名。最小有效命令只需要三个必填列：
+
+```powershell
+backend\.venv\Scripts\python.exe backend\scripts\import_tianchi_catalog.py `
+  --metadata "<metadata-file>" `
+  --images-dir "<images-dir>" `
+  --id-column "<id-column>" `
+  --name-column "<name-column>" `
+  --image-column "<image-column>"
+```
+
+如果元数据包含分类、颜色、描述、价格或热度，可以额外指定对应字段；这些参数都是可选的，但一旦提供就必须与真实字段名完全一致：
 
 ```powershell
 backend\.venv\Scripts\python.exe backend\scripts\import_tianchi_catalog.py `
@@ -33,14 +44,14 @@ backend\.venv\Scripts\python.exe backend\scripts\import_tianchi_catalog.py `
 导入完成后，依次构建 SQLite 商品库和文本索引，并检查结果：
 
 ```powershell
-backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py
+backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py --input_csv backend/data/sample/articles_sample.csv
 backend\.venv\Scripts\python.exe backend\scripts\build_text_index.py --backend hashing --force
 backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py
 ```
 
 ## 部署到虚拟机
 
-将以下五类运行数据上传到虚拟机相应的 `backend/data/` 目录：`articles_sample.csv`、`images/`、`catalog_manifest.json`、`app.db` 和 `vector_store/text/`。这些文件不进入 Git。
+将以下四类运行数据上传到虚拟机相应的 `backend/data/` 目录：`articles_sample.csv`、`images/`、`catalog_manifest.json` 和 `app.db`。这些文件不进入 Git。不要上传 `vector_store/text/`：Dockerfile 会在重建 backend 镜像时生成文本索引，预先存在的索引会导致构建失败。
 
 上传后只重建并重启 `backend` 服务：
 

@@ -32,6 +32,11 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REQUIRED_MAPPING_KEYS = {"id", "name", "image"}
 
 
+class CatalogArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
 def _stringify_row(row: dict[object, object]) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in row.items()}
 
@@ -325,7 +330,7 @@ def write_catalog(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Import a Tianchi product catalog.")
+    parser = CatalogArgumentParser(description="Import a Tianchi product catalog.")
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--images-dir", type=Path, required=True)
     parser.add_argument("--id-column", required=True)
@@ -345,8 +350,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
-        required_columns = {args.id_column, args.name_column, args.image_column}
-        rows = load_metadata_rows(args.metadata, required_columns=required_columns)
         mapping = {
             "id": args.id_column,
             "name": args.name_column,
@@ -362,6 +365,9 @@ def main(argv: list[str] | None = None) -> int:
             if column_name:
                 mapping[mapping_key] = column_name
 
+        rows = load_metadata_rows(
+            args.metadata, required_columns=set(mapping.values())
+        )
         products = normalize_products(rows, args.images_dir, mapping)
         selected = sample_products(products, args.sample_size, args.seed)
         result = write_catalog(
@@ -370,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
             source_name="tianchi-fashion-collection",
             seed=args.seed,
         )
+    except SystemExit as error:
+        return 0 if error.code == 0 else 1
     except (FileNotFoundError, ValueError, RuntimeError, OSError, json.JSONDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
