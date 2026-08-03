@@ -68,7 +68,13 @@ def get_orchestrator() -> ShoppingAgentOrchestrator:
     device = os.getenv("IMAGE_DEVICE", "auto")
     text_retriever = TextRetriever(text_index)
     image_retriever = ImageRetriever(image_index, device=device)
-    hybrid_retriever = HybridRetriever(text_index, image_index, image_device=device)
+    hybrid_retriever = HybridRetriever(
+        text_index,
+        image_index,
+        image_device=device,
+        text_retriever=text_retriever,
+        image_retriever=image_retriever,
+    )
     return ShoppingAgentOrchestrator(
         text_retriever=text_retriever,
         image_retriever=image_retriever,

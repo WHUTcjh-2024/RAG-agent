@@ -20,9 +20,15 @@ class HybridRetriever:
         text_index_dir: str | Path,
         image_index_dir: str | Path,
         image_device: str = "auto",
+        *,
+        text_retriever: TextRetriever | None = None,
+        image_retriever: ImageRetriever | None = None,
     ) -> None:
-        self.text_retriever = TextRetriever(text_index_dir)
-        self.image_retriever = ImageRetriever(image_index_dir, device=image_device)
+        self.text_retriever = text_retriever or TextRetriever(text_index_dir)
+        self.image_retriever = image_retriever or ImageRetriever(
+            image_index_dir,
+            device=image_device,
+        )
 
         self.text_positions = {
             str(product.get("article_id", "")): index
