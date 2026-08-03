@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
 from pathlib import Path
 import random
 import shutil
+import sys
 import tempfile
 import uuid
 
 from PIL import Image, UnidentifiedImageError
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from scripts.data_utils import (
     PRODUCT_FIELDS,
@@ -316,3 +322,64 @@ def write_catalog(
         return {"products": expected_count, "images": expected_count}
     finally:
         _remove_path(temporary_dir)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Import a Tianchi product catalog.")
+    parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--images-dir", type=Path, required=True)
+    parser.add_argument("--id-column", required=True)
+    parser.add_argument("--name-column", required=True)
+    parser.add_argument("--image-column", required=True)
+    parser.add_argument("--category-column")
+    parser.add_argument("--color-column")
+    parser.add_argument("--description-column")
+    parser.add_argument("--price-column")
+    parser.add_argument("--popularity-column")
+    parser.add_argument("--sample-size", type=int, default=5000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--out-dir", type=Path, default=BACKEND_DIR / "data" / "sample")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args(argv)
+        required_columns = {args.id_column, args.name_column, args.image_column}
+        rows = load_metadata_rows(args.metadata, required_columns=required_columns)
+        mapping = {
+            "id": args.id_column,
+            "name": args.name_column,
+            "image": args.image_column,
+        }
+        for mapping_key, column_name in (
+            ("category", args.category_column),
+            ("color", args.color_column),
+            ("description", args.description_column),
+            ("price", args.price_column),
+            ("popularity", args.popularity_column),
+        ):
+            if column_name:
+                mapping[mapping_key] = column_name
+
+        products = normalize_products(rows, args.images_dir, mapping)
+        selected = sample_products(products, args.sample_size, args.seed)
+        result = write_catalog(
+            selected,
+            args.out_dir,
+            source_name="tianchi-fashion-collection",
+            seed=args.seed,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, OSError, json.JSONDecodeError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    print(
+        "SUCCESS: Tianchi catalog "
+        f"products={result['products']} images={result['images']}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

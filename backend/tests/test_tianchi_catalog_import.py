@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from PIL import Image
@@ -354,3 +356,53 @@ def test_write_catalog_restores_existing_output_when_promotion_fails(
     assert legacy_csv.read_text(encoding="utf-8") == "legacy csv"
     assert legacy_image.read_bytes() == b"legacy image"
     assert legacy_manifest.read_text(encoding="utf-8") == "legacy manifest"
+
+
+def test_cli_imports_chinese_catalog_and_reports_invalid_columns(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "catalog.csv"
+    images_dir = tmp_path / "images"
+    output_dir = tmp_path / "output"
+    create_image(images_dir / "dress.png")
+    create_image(images_dir / "coat.jpg")
+    with metadata_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["item_id", "title", "image"])
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"item_id": "101", "title": "中文连衣裙", "image": "dress.png"},
+                {"item_id": "102", "title": "中文大衣", "image": "coat.jpg"},
+            ]
+        )
+
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parents[1] / "scripts" / "import_tianchi_catalog.py"),
+        "--metadata",
+        str(metadata_path),
+        "--images-dir",
+        str(images_dir),
+        "--id-column",
+        "item_id",
+        "--name-column",
+        "title",
+        "--image-column",
+        "image",
+        "--sample-size",
+        "2",
+        "--out-dir",
+        str(output_dir),
+    ]
+
+    completed = subprocess.run(command, capture_output=True, text=True)
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "SUCCESS: Tianchi catalog products=2 images=2" in completed.stdout
+    manifest = json.loads((output_dir / "catalog_manifest.json").read_text("utf-8"))
+    assert manifest["product_count"] == 2
+
+    invalid_column = subprocess.run(
+        [*command[:7], "missing", *command[8:]], capture_output=True, text=True
+    )
+
+    assert invalid_column.returncode == 1
+    assert "ERROR:" in invalid_column.stderr
