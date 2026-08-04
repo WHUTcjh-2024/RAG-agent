@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import argparse
+import csv
+import json
 from pathlib import Path
 import sys
 
@@ -8,10 +11,20 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from scripts.data_utils import PRODUCT_FIELDS, normalize_article_id
-from scripts.import_tianchi_catalog import _is_valid_image
+from scripts.import_tianchi_catalog import (
+    _is_valid_image,
+    sample_products,
+    validate_output,
+    write_catalog,
+)
 
 
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+class CatalogArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
 
 
 def parse_tianchi_item_line(line: str) -> dict[str, str] | None:
@@ -88,3 +101,53 @@ def build_tianchi_products(items_path: Path, images_dir: Path) -> list[dict[str,
         for product in products
         if set(PRODUCT_FIELDS).issubset(product)
     ]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = CatalogArgumentParser(
+        description="Import a Tianchi fashion collection catalog."
+    )
+    parser.add_argument("--items", type=Path, required=True)
+    parser.add_argument("--images-dir", type=Path, required=True)
+    parser.add_argument("--sample-size", type=int, default=5000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--out-dir", type=Path, default=BACKEND_DIR / "data" / "tianchi-catalog"
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args(argv)
+        products = build_tianchi_products(args.items, args.images_dir)
+        selected = sample_products(products, args.sample_size, args.seed)
+        result = write_catalog(
+            selected,
+            args.out_dir,
+            source_name="tianchi-fashion-collection",
+            seed=args.seed,
+        )
+        validate_output(args.out_dir, expected_count=len(selected))
+    except SystemExit as error:
+        return 0 if error.code == 0 else 1
+    except (
+        FileNotFoundError,
+        ValueError,
+        RuntimeError,
+        OSError,
+        csv.Error,
+        json.JSONDecodeError,
+    ) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    print(
+        "SUCCESS: Tianchi fashion catalog "
+        f"products={result['products']} images={result['images']}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
