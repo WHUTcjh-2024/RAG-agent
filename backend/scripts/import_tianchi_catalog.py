@@ -68,10 +68,17 @@ def load_metadata_rows(
             reader = csv.DictReader(handle, strict=True)
             if not reader.fieldnames:
                 raise ValueError("CSV metadata must have a header")
+            if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                raise ValueError("CSV metadata contains duplicate header columns")
             _validate_required_columns(
                 set(reader.fieldnames), required_columns, "CSV metadata"
             )
-            return [_stringify_row(row) for row in reader]
+            rows = []
+            for row in reader:
+                if None in row:
+                    raise ValueError("CSV metadata contains rows with too many fields")
+                rows.append(_stringify_row(row))
+            return rows
 
     if suffix in {".jsonl", ".ndjson"}:
         rows: list[dict[str, str]] = []
@@ -119,6 +126,7 @@ def _finite_number(value: str) -> str | None:
         not parsed.is_finite()
         or parsed < 0
         or not math.isfinite(as_float)
+        or (not parsed.is_zero() and as_float == 0.0)
         or (not parsed.is_zero() and not -324 <= parsed.adjusted() <= 308)
     ):
         return None

@@ -91,22 +91,45 @@ rollback_image="${backend_image_name}:pre-tianchi-$(date -u +%Y%m%dT%H%M%SZ)"
 docker tag "$backend_image" "$rollback_image"
 docker compose stop backend
 
+move_if_present() {
+  source=$1
+  target=$2
+  if [ -e "$source" ] || [ -L "$source" ]; then
+    mv "$source" "$target"
+  fi
+  return 0
+}
+
 rollback() {
   rollback_status=$?
   trap - ERR
   set +e
-  docker compose stop backend
+  rollback_failed=0
+  docker compose stop backend || rollback_failed=1
   for item in images articles_sample.csv catalog_manifest.json; do
     target="backend/data/sample/$item"
-    if [ -e "$target" ] || [ -L "$target" ]; then mv "$target" "$backup_dir/failed-$item"; fi
-    if [ -e "$backup_dir/$item" ] || [ -L "$backup_dir/$item" ]; then mv "$backup_dir/$item" "$target"; fi
+    move_if_present "$target" "$backup_dir/failed-$item" || rollback_failed=1
+    move_if_present "$backup_dir/$item" "$target" || rollback_failed=1
   done
   target=backend/data/sqlite/app.db
-  if [ -e "$target" ] || [ -L "$target" ]; then mv "$target" "$backup_dir/failed-app.db"; fi
-  if [ -e "$backup_dir/app.db" ] || [ -L "$backup_dir/app.db" ]; then mv "$backup_dir/app.db" "$target"; fi
-  if [ -e "$backup_dir/text" ] || [ -L "$backup_dir/text" ]; then mv "$backup_dir/text" backend/data/vector_store/text; fi
-  docker tag "$rollback_image" "$backend_image_name"
-  docker compose up -d --force-recreate --no-deps --no-build backend
+  move_if_present "$target" "$backup_dir/failed-app.db" || rollback_failed=1
+  move_if_present "$backup_dir/app.db" "$target" || rollback_failed=1
+  move_if_present "$backup_dir/text" backend/data/vector_store/text || rollback_failed=1
+  docker tag "$rollback_image" "$backend_image_name" || rollback_failed=1
+  docker compose up -d --force-recreate --no-deps --no-build backend || rollback_failed=1
+  rollback_healthy=0
+  for attempt in {1..12}; do
+    if curl --fail --silent http://127.0.0.1:18000/health; then
+      rollback_healthy=1
+      break
+    fi
+    sleep 5
+  done
+  if [ "$rollback_healthy" -ne 1 ]; then rollback_failed=1; fi
+  if [ "$rollback_failed" -ne 0 ]; then
+    echo "回滚未完成，请检查 $backup_dir 中的备份和 Docker 日志。" >&2
+    exit 2
+  fi
   exit "$rollback_status"
 }
 trap rollback ERR

@@ -78,6 +78,23 @@ def test_load_metadata_rows_rejects_unterminated_csv_quote(tmp_path: Path) -> No
         load_metadata_rows(csv_path, required_columns={"id", "name", "image"})
 
 
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "id,name,image,image\n1,shirt,shirt.png,duplicate.png\n",
+        "id,name,image\n1,shirt,shirt.png,unexpected\n",
+    ],
+)
+def test_load_metadata_rows_rejects_duplicate_headers_and_extra_fields(
+    tmp_path: Path, contents: str
+) -> None:
+    csv_path = tmp_path / "malformed.csv"
+    csv_path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_metadata_rows(csv_path, required_columns={"id", "name", "image"})
+
+
 @pytest.mark.parametrize("suffix", [".jsonl", ".json"])
 def test_load_metadata_rows_validates_required_columns_for_json_metadata(
     tmp_path: Path, suffix: str
@@ -208,6 +225,7 @@ def test_normalize_products_rejects_path_like_article_id(
         ("price", "NaN"),
         ("popularity", "Infinity"),
         ("price", "1e309"),
+        ("price", "1e-324"),
     ],
 )
 def test_normalize_products_rejects_non_finite_numeric_fields(
