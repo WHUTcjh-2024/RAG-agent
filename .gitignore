@@ -25,6 +25,9 @@ node_modules/
 dist/
 frontend/test-results/
 frontend/playwright-report/
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/*.tsbuildinfo
 *-server.log
 *-server.err.log
 

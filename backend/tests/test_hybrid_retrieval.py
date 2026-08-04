@@ -14,6 +14,9 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.api.search import get_hybrid_retriever
+from app.core.retrieval.hybrid_retriever import HybridRetriever
+from app.core.retrieval.image_retriever import ImageRetriever
+from app.core.retrieval.text_retriever import TextRetriever
 from app.main import app
 from tests.test_image_retrieval import create_image_fixture
 
@@ -94,3 +97,20 @@ def test_hybrid_api_requires_both_modalities(tmp_path: Path, monkeypatch) -> Non
         )
     assert response.status_code == 422
     get_hybrid_retriever.cache_clear()
+
+
+def test_hybrid_retriever_reuses_preloaded_indexes(tmp_path: Path) -> None:
+    text_index, image_index, _ = build_fixture_indexes(tmp_path)
+    text_retriever = TextRetriever(text_index)
+    image_retriever = ImageRetriever(image_index, device="cpu")
+
+    hybrid_retriever = HybridRetriever(
+        text_index,
+        image_index,
+        image_device="cpu",
+        text_retriever=text_retriever,
+        image_retriever=image_retriever,
+    )
+
+    assert hybrid_retriever.text_retriever is text_retriever
+    assert hybrid_retriever.image_retriever is image_retriever

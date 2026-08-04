@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
 from PIL import Image
 
-from app.core.image_encoder import create_image_encoder
+from app.core.image_encoder import ImageEncoder, create_image_encoder
 from app.core.catalog_fields import enrich_commerce_fields
 from app.core.retrieval.filters import product_matches_filters
 
@@ -38,12 +39,24 @@ class ImageRetriever:
         if self.embeddings.shape[1] != dimension:
             raise RuntimeError("Image embedding dimension does not match metadata.json.")
 
-        self.encoder = create_image_encoder(
-            backend=self.metadata["backend"],
-            model_name=self.metadata.get("model", ""),
-            device=device,
-            dimension=dimension,
-        )
+        self._device = device
+        self._dimension = dimension
+        self._encoder: ImageEncoder | None = None
+        self._encoder_lock = Lock()
+
+    @property
+    def encoder(self) -> ImageEncoder:
+        """Load the expensive vision model only when an image query needs it."""
+        if self._encoder is None:
+            with self._encoder_lock:
+                if self._encoder is None:
+                    self._encoder = create_image_encoder(
+                        backend=self.metadata["backend"],
+                        model_name=self.metadata.get("model", ""),
+                        device=self._device,
+                        dimension=self._dimension,
+                    )
+        return self._encoder
 
     def _candidate_indices(self, filters: dict[str, str | list[str]]) -> np.ndarray:
         if not filters:

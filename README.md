@@ -51,3 +51,6 @@ curl --fail http://127.0.0.1:8080/actuator/prometheus | head
 天池真实商品数据、图片和生成运行数据不能提交到 Git；导入与仅重建 Python 后端的步骤见[天池商品数据导入说明](docs/tianchi-catalog-import.md)。
 
 已有 H2 数据的环境请先阅读其中的“从旧 H2 Compose 升级”章节；本次 PostgreSQL 切换不会自动迁移旧数据。
+## 贡献者
+
+大佬陈昊

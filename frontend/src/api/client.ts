@@ -1,19 +1,38 @@
-import type { AgentErrorPayload, AuthResult, CartItem, DecisionCard, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 import { createClientId } from "../utils/clientId";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
 
 const STREAM_EVENT = {
+  STATUS: "status",
+  NODE: "node",
   META: "meta",
   TOOL: "tool",
   PRODUCTS: "products",
   COMPARISON: "comparison",
   MESSAGE: "message",
   ERROR: "error",
+  EVIDENCE: "evidence",
   DECISION: "decision",
   CONFIRM_REQUIRED: "confirm_required",
-  WARDROBE_PLAN: "wardrobe_plan"
+  WARDROBE_PLAN: "wardrobe_plan",
+  DONE: "done"
 } as const;
+
+const NODE_PHASES: Record<string, AgentPhase> = {
+  validate_input: "understanding",
+  understand_request: "constraints",
+  load_context: "knowledge",
+  plan_tools: "tool",
+  retrieve_candidates: "retrieval",
+  verify_constraints: "verification",
+  build_evidence: "verification",
+  generate_answer: "generation",
+  wait_for_confirmation: "waiting",
+  complete: "success"
+};
+
+export const phaseForNode = (node: string): AgentPhase => NODE_PHASES[node] || "understanding";
 
 export class ApiClientError extends Error {
   readonly status: number;
@@ -98,16 +117,20 @@ export async function fetchFacets(): Promise<ProductFacets> {
 }
 
 type StreamHandlers = {
+  onStatus?: (payload: AgentStatusEvent) => void;
+  onNode?: (payload: AgentNodeEvent) => void;
   onMeta: (payload: { request_id?: string; session_id: string; task_id: string; intent: string; slots: Slots }) => void;
   onTaskId?: (taskId: string) => void;
   onTool: (payload: ToolTrace) => void;
   onProducts: (products: Product[]) => void;
   onComparison: (products: Product[]) => void;
   onDecision: (card: DecisionCard) => void;
+  onEvidence?: (evidence: DecisionEvidence) => void;
   onConfirmRequired: (action: PendingCartAction) => void;
   onWardrobePlan: (plan: WardrobePlan) => void;
   onMessage: (delta: string) => void;
   onError: (message: string) => void;
+  onDone?: () => void;
 };
 
 export async function streamChat(
@@ -154,6 +177,24 @@ export async function streamChat(
       }
       const payload = JSON.parse(data);
       switch (event) {
+        case STREAM_EVENT.STATUS:
+          handlers.onStatus?.({
+            state: payload.state || "processing",
+            requestId: payload.request_id,
+            taskId: payload.task_id
+          });
+          break;
+        case STREAM_EVENT.NODE:
+          handlers.onNode?.({
+            id: createClientId(),
+            node: payload.node || "unknown",
+            phase: phaseForNode(payload.node || "unknown"),
+            state: payload.state || "started",
+            durationMs: payload.duration_ms,
+            summary: payload.summary,
+            occurredAt: performance.now()
+          });
+          break;
         case STREAM_EVENT.META:
           handlers.onMeta(payload);
           break;
@@ -169,6 +210,9 @@ export async function streamChat(
         case STREAM_EVENT.DECISION:
           handlers.onDecision(payload.card);
           break;
+        case STREAM_EVENT.EVIDENCE:
+          handlers.onEvidence?.(payload.item);
+          break;
         case STREAM_EVENT.CONFIRM_REQUIRED:
           handlers.onConfirmRequired(payload);
           break;
@@ -177,6 +221,9 @@ export async function streamChat(
           break;
         case STREAM_EVENT.MESSAGE:
           handlers.onMessage(payload.delta || "");
+          break;
+        case STREAM_EVENT.DONE:
+          handlers.onDone?.();
           break;
         case STREAM_EVENT.ERROR:
           handlers.onError(payload.message || "处理失败");

@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "FitMe",
+    "slug": "fitme",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "fitme",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.fitme.agent",
+      "adaptiveIcon": {
+        "backgroundColor": "#5F5365",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.fitme.agent",
+      "supportsTablet": false
+    },
+    "plugins": [
+      "expo-router",
+      ["expo-secure-store", { "configureAndroidBackup": true, "faceIDPermission": "允许 FitMe 使用面容认证。" }],
+      ["expo-image-picker", { "photosPermission": "允许 FitMe 读取照片用于识别服装和以图搜款。", "cameraPermission": "允许 FitMe 拍摄服装照片。", "microphonePermission": false }],
+      ["expo-build-properties", { "android": { "compileSdkVersion": 36, "targetSdkVersion": 36, "buildToolsVersion": "36.0.0", "usesCleartextTraffic": true } }],
+      ["expo-splash-screen", { "backgroundColor": "#F7F5F2", "image": "./assets/images/splash-icon.png", "imageWidth": 92 }]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

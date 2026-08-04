@@ -26,6 +26,37 @@ export interface ToolTrace {
   summary: string;
 }
 
+export type AgentPhase =
+  | "understanding"
+  | "constraints"
+  | "retrieval"
+  | "knowledge"
+  | "tool"
+  | "comparison"
+  | "verification"
+  | "generation"
+  | "waiting"
+  | "success"
+  | "failure"
+  | "cancelled"
+  | "retrying";
+
+export interface AgentNodeEvent {
+  id: string;
+  node: string;
+  phase: AgentPhase;
+  state: "started" | "completed" | "failed";
+  durationMs?: number;
+  summary?: string;
+  occurredAt: number;
+}
+
+export interface AgentStatusEvent {
+  state: string;
+  requestId?: string;
+  taskId?: string;
+}
+
 export type DecisionVerdict = "RECOMMEND_BUY" | "BUY_WITH_CAUTION" | "NOT_RECOMMENDED" | "INSUFFICIENT_DATA";
 
 export interface DecisionEvidence {
