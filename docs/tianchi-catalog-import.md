@@ -70,7 +70,7 @@ scp backend\data\tianchi-catalog\app.db root@192.168.100.128:/root/catalog-relea
 scp -r backend\data\tianchi-catalog\images root@192.168.100.128:/root/catalog-releases/$release/
 ```
 
-登录虚拟机后执行下面的发布脚本。它会停止 Python 后端、把现有运行数据移动到带时间戳的仓库外备份目录、切换新数据、移走旧文本索引后构建镜像。构建、启动或健康检查失败时，脚本会恢复旧数据并重新启动旧容器；成功后保留备份，便于人工回退。
+登录虚拟机后执行下面的发布脚本。它会停止 Python 后端、给当前后端镜像打回滚标签、把现有运行数据移动到带时间戳的仓库外备份目录、切换新数据、移走旧文本索引后构建镜像。构建、启动或健康检查失败时，脚本会恢复旧镜像和旧数据，再强制创建旧容器；成功后保留备份与回滚镜像标签，便于人工回退。
 
 ```bash
 set -euo pipefail
@@ -83,9 +83,17 @@ test -f "$release/app.db"
 
 backup_dir="/root/catalog-backups/tianchi-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$backup_dir" backend/data/sample backend/data/sqlite
+backend_container=$(docker compose ps -q backend)
+test -n "$backend_container"
+backend_image=$(docker inspect --format '{{.Image}}' "$backend_container")
+backend_image_name=$(docker compose config --images backend)
+rollback_image="${backend_image_name}:pre-tianchi-$(date -u +%Y%m%dT%H%M%SZ)"
+docker tag "$backend_image" "$rollback_image"
 docker compose stop backend
 
 rollback() {
+  rollback_status=$?
+  trap - ERR
   set +e
   docker compose stop backend
   for item in images articles_sample.csv catalog_manifest.json; do
@@ -97,7 +105,9 @@ rollback() {
   if [ -e "$target" ] || [ -L "$target" ]; then mv "$target" "$backup_dir/failed-app.db"; fi
   if [ -e "$backup_dir/app.db" ] || [ -L "$backup_dir/app.db" ]; then mv "$backup_dir/app.db" "$target"; fi
   if [ -e "$backup_dir/text" ] || [ -L "$backup_dir/text" ]; then mv "$backup_dir/text" backend/data/vector_store/text; fi
-  docker compose start backend
+  docker tag "$rollback_image" "$backend_image_name"
+  docker compose up -d --force-recreate --no-deps --no-build backend
+  exit "$rollback_status"
 }
 trap rollback ERR
 

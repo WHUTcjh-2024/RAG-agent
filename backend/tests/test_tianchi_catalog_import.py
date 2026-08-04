@@ -70,6 +70,28 @@ def test_load_metadata_rows_rejects_headerless_csv_with_required_columns(
         load_metadata_rows(csv_path, required_columns={"id", "name"})
 
 
+def test_load_metadata_rows_rejects_unterminated_csv_quote(tmp_path: Path) -> None:
+    csv_path = tmp_path / "malformed.csv"
+    csv_path.write_text('id,name,image\n1,"shirt,shirt.png\n', encoding="utf-8")
+
+    with pytest.raises(csv.Error):
+        load_metadata_rows(csv_path, required_columns={"id", "name", "image"})
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+def test_load_metadata_rows_validates_required_columns_for_json_metadata(
+    tmp_path: Path, suffix: str
+) -> None:
+    metadata_path = tmp_path / f"catalog{suffix}"
+    if suffix == ".jsonl":
+        metadata_path.write_text('{"id": "1", "name": "shirt"}\n', encoding="utf-8")
+    else:
+        metadata_path.write_text('[{"id": "1", "name": "shirt"}]', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing required columns: image"):
+        load_metadata_rows(metadata_path, required_columns={"id", "name", "image"})
+
+
 def test_load_metadata_rows_rejects_invalid_formats(tmp_path: Path) -> None:
     unsupported = tmp_path / "catalog.txt"
     unsupported.write_text("id,name\n1,shirt\n", encoding="utf-8")
@@ -181,7 +203,12 @@ def test_normalize_products_rejects_path_like_article_id(
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("price", "N/A"), ("price", "NaN"), ("popularity", "Infinity")],
+    [
+        ("price", "N/A"),
+        ("price", "NaN"),
+        ("popularity", "Infinity"),
+        ("price", "1e309"),
+    ],
 )
 def test_normalize_products_rejects_non_finite_numeric_fields(
     tmp_path: Path, field: str, value: str

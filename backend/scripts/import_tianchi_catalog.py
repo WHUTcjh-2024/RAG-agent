@@ -5,6 +5,7 @@ import csv
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import re
@@ -44,6 +45,16 @@ def _stringify_row(row: dict[object, object]) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in row.items()}
 
 
+def _validate_required_columns(
+    available_columns: set[str], required_columns: set[str] | None, source_name: str
+) -> None:
+    missing_columns = sorted(set(required_columns or ()) - available_columns)
+    if missing_columns:
+        raise ValueError(
+            f"{source_name} is missing required columns: " + ", ".join(missing_columns)
+        )
+
+
 def load_metadata_rows(
     path: Path, *, required_columns: set[str] | None = None
 ) -> list[dict[str, str]]:
@@ -54,15 +65,12 @@ def load_metadata_rows(
 
     if suffix == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv.DictReader(handle)
+            reader = csv.DictReader(handle, strict=True)
             if not reader.fieldnames:
                 raise ValueError("CSV metadata must have a header")
-            missing_columns = sorted(set(required_columns or ()) - set(reader.fieldnames))
-            if missing_columns:
-                raise ValueError(
-                    "CSV metadata is missing required columns: "
-                    + ", ".join(missing_columns)
-                )
+            _validate_required_columns(
+                set(reader.fieldnames), required_columns, "CSV metadata"
+            )
             return [_stringify_row(row) for row in reader]
 
     if suffix in {".jsonl", ".ndjson"}:
@@ -75,12 +83,19 @@ def load_metadata_rows(
                 if not isinstance(value, dict):
                     raise ValueError("JSONL metadata rows must be objects")
                 rows.append(_stringify_row(value))
+        _validate_required_columns(
+            set().union(*(row.keys() for row in rows)), required_columns, "JSONL metadata"
+        )
         return rows
 
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
         raise ValueError("JSON metadata must be an array of objects")
-    return [_stringify_row(row) for row in value]
+    rows = [_stringify_row(row) for row in value]
+    _validate_required_columns(
+        set().union(*(row.keys() for row in rows)), required_columns, "JSON metadata"
+    )
+    return rows
 
 
 def _mapped_value(row: dict[str, str], mapping: dict[str, str], name: str) -> str:
@@ -97,9 +112,15 @@ def _finite_number(value: str) -> str | None:
         return ""
     try:
         parsed = Decimal(value)
-    except InvalidOperation:
+        as_float = float(parsed)
+    except (InvalidOperation, OverflowError, ValueError):
         return None
-    if not parsed.is_finite() or parsed < 0:
+    if (
+        not parsed.is_finite()
+        or parsed < 0
+        or not math.isfinite(as_float)
+        or (not parsed.is_zero() and not -324 <= parsed.adjusted() <= 308)
+    ):
         return None
     return format(parsed, "f")
 

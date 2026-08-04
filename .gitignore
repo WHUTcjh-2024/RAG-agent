@@ -12,6 +12,7 @@ kaggle.json
 *.zip
 backend/data/raw/
 backend/data/tianchi-catalog/
+backend/data/.tianchi_catalog_*/
 backend/data/sample/images/
 backend/data/sample/transactions_sample.csv
 backend/data/vector_store/
