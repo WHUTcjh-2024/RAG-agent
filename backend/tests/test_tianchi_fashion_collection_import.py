@@ -97,6 +97,57 @@ def test_build_tianchi_products_skips_duplicate_item_images(tmp_path: Path) -> N
     assert build_tianchi_products(items_path, images_dir) == []
 
 
+def test_build_tianchi_products_skips_item_when_duplicate_candidates_include_broken_image(
+    tmp_path: Path,
+) -> None:
+    items_path = tmp_path / "dim_items.txt"
+    items_path.write_text("100 4 8 9\n", encoding="utf-8")
+    images_dir = tmp_path / "images"
+    create_image(images_dir / "valid" / "100.jpg")
+    broken_path = images_dir / "broken" / "100.png"
+    broken_path.parent.mkdir(parents=True, exist_ok=True)
+    broken_path.write_bytes(b"not an image")
+
+    assert build_tianchi_products(items_path, images_dir) == []
+
+
+def test_build_tianchi_products_skips_symlinked_images_resolving_outside_directory(
+    tmp_path: Path,
+) -> None:
+    items_path = tmp_path / "dim_items.txt"
+    items_path.write_text("100 4 8 9\n", encoding="utf-8")
+    images_dir = tmp_path / "images"
+    external_image = tmp_path / "external" / "100.jpg"
+    create_image(external_image)
+    symlink_path = images_dir / "nested" / "100.jpg"
+    symlink_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        symlink_path.symlink_to(external_image)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable on this Windows environment: {error}")
+
+    assert build_tianchi_products(items_path, images_dir) == []
+
+
+def test_build_tianchi_products_streams_items_file_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    items_path = tmp_path / "dim_items.txt"
+    items_path.write_text("100 4 8 9\n", encoding="utf-8")
+    images_dir = tmp_path / "images"
+    create_image(images_dir / "100.jpg")
+
+    def fail_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        raise AssertionError("build_tianchi_products should stream lines via Path.open()")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    products = build_tianchi_products(items_path, images_dir)
+
+    assert len(products) == 1
+    assert products[0]["article_id"] == "0000000100"
+
+
 def test_cli_publishes_catalog_from_temp_items_and_images(tmp_path: Path) -> None:
     items_path = tmp_path / "dim_items.txt"
     items_path.write_text("100 4 8 9\n200 7 11 22 33\n", encoding="utf-8")
