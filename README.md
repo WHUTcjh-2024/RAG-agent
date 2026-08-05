@@ -46,6 +46,35 @@ curl --fail http://127.0.0.1:8080/actuator/health
 curl --fail http://127.0.0.1:8080/actuator/prometheus | head
 ```
 
+### 构建包含图片索引的 backend 镜像
+
+首次部署图片检索，或需要重新生成图片索引时，在构建前将 `.env` 中的
+`BUILD_IMAGE_INDEX` 设为 `1`。下面的命令会保留已有 `.env` 的其他配置：
+
+```bash
+if grep -q '^BUILD_IMAGE_INDEX=' .env; then
+  sed -i 's/^BUILD_IMAGE_INDEX=.*/BUILD_IMAGE_INDEX=1/' .env
+else
+  echo 'BUILD_IMAGE_INDEX=1' >> .env
+fi
+
+# 为当前 backend 镜像保留可回退的标签。
+docker image tag rag-agent-backend rag-agent-backend:before-image-index
+docker compose build backend
+docker compose up -d backend
+
+# health 返回中必须包含 image_index=true。
+curl --fail --silent http://127.0.0.1:18000/health \
+  | grep -Eq '"image_index"[[:space:]]*:[[:space:]]*true'
+```
+
+如果图片索引构建后的镜像需要回退，恢复备份标签并使用该镜像重启 backend：
+
+```bash
+docker image tag rag-agent-backend:before-image-index rag-agent-backend
+docker compose up -d --no-build backend
+```
+
 详情见 [Java 后端部署说明](java-backend/README.md)。
 
 天池真实商品数据、图片和生成运行数据不能提交到 Git；导入与仅重建 Python 后端的步骤见[天池商品数据导入说明](docs/tianchi-catalog-import.md)。
