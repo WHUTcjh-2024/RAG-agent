@@ -58,7 +58,7 @@ else
   echo 'BUILD_IMAGE_INDEX=1' >> .env
 fi
 
-# 为当前 backend 镜像保留可回退的标签。
+# Compose 默认将 backend 固定命名为 rag-agent-backend；为其保留可回退的标签。
 docker image tag rag-agent-backend rag-agent-backend:before-image-index
 docker compose build backend
 docker compose up -d backend
