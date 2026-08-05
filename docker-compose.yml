@@ -1,8 +1,12 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        BUILD_IMAGE_INDEX: ${BUILD_IMAGE_INDEX:-0}
     environment:
       IMAGE_DEVICE: cpu
+      IMAGE_INDEX_DIR: /app/data/vector_store/image
       SESSION_DB_PATH: /app/data/sqlite/sessions.db
       AGENT_FACTS_BASE_URL: http://java-backend:8080
       AGENT_FACTS_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
