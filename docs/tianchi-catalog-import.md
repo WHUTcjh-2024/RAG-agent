@@ -41,6 +41,32 @@ backend\.venv\Scripts\python.exe backend\scripts\import_tianchi_catalog.py `
 
 默认导入 5,000 件商品，随机种子为 42；可用 `--sample-size` 和 `--seed` 调整。导入会跳过无效或重复图片、路径越界图片、非法商品 ID 和非法数值。若有效商品不足请求数量，原有运行目录不会被替换。导入途中被中断时，下次导入会先恢复未完成发布的旧目录。
 
+## 导入天池原始服装数据
+
+已下载的天池“淘宝服装搭配数据集”应放在 `backend/data/raw/tianchi/`：
+
+- `dim_items.txt`：商品 ID、类目 ID 与分词标题 ID 序列。
+- `archive/tianchi_fm_img3_1.zip`：原始图片压缩包。
+- `images/`：解压后的嵌套图片目录，图片文件名为商品 ID。
+
+PowerShell 的 `Expand-Archive` 可能无法处理这个大型 ZIP，请使用 `tar -xf` 解压：
+
+```powershell
+tar -xf backend\data\raw\tianchi\archive\tianchi_fm_img3_1.zip -C backend\data\raw\tianchi\images
+```
+
+天池原始数据不提供人类可读的标题和售价。导入器会保留真实商品 ID、真实类目 ID 与真实图片，并生成“天池服装 类目{类目 ID} 商品{商品 ID}”的展示名；99 至 498 元的价格是仅供购物车和订单流程使用的确定性演示价格，不代表原始商品售价。
+
+```powershell
+backend\.venv\Scripts\python.exe backend\scripts\import_tianchi_fashion_collection.py `
+  --items backend\data\raw\tianchi\dim_items.txt `
+  --images-dir backend\data\raw\tianchi\images `
+  --sample-size 5000 `
+  --seed 42
+```
+
+导入结果默认写入受 Git 忽略的 `backend/data/tianchi-catalog/`。若有效商品不足 5,000 条，原有目录不会被替换。
+
 ## 构建本地运行数据
 
 先生成 SQLite 文件并校验 CSV 与图片。文本索引不需要在本地上传或复制，Docker 构建后端镜像时会从 CSV 重新生成它。
