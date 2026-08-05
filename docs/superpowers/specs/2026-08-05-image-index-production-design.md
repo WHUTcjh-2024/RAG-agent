@@ -24,7 +24,9 @@ IMAGE_INDEX_DIR=/app/data/vector_store/image
 
 这样运行中的后端读取的目录与索引脚本写入目录保持一致。索引随镜像层保存，普通容器重启不会丢失；重新构建生产镜像时会基于当前商品数据重新生成。
 
-Compose 还通过 `image: ${BACKEND_IMAGE:-rag-agent-backend}` 为 backend 固定默认镜像名，并在 `.env` 中以 `BACKEND_IMAGE=rag-agent-backend` 保持该默认值。`rag-agent-backend` 是图片索引生产构建的回退契约：构建前以该标签创建 `rag-agent-backend:before-image-index` 备份，失败时再将备份标签恢复为 `rag-agent-backend` 后重启 backend，避免依赖 Compose 自动生成的项目名前缀镜像名。
+Compose 通过硬编码的 `image: rag-agent-backend` 为 backend 固定镜像名，不接受环境变量覆盖。`rag-agent-backend` 是图片索引生产构建的回退契约：构建前以该标签创建 `rag-agent-backend:before-image-index` 备份，失败时再将备份标签恢复为 `rag-agent-backend` 后重启 backend，避免依赖 Compose 自动生成的项目名前缀镜像名。
+
+`backend/.dockerignore` 排除 `data/vector_store/image/`，使任何留在工作目录中的旧生成索引都不会进入 Docker 构建上下文。图片索引只能由启用 `BUILD_IMAGE_INDEX=1` 的 Dockerfile 步骤生成，确保生产构建干净且可重复。
 
 ## 资源与运行方式
 

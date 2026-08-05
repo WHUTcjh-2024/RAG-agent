@@ -4,7 +4,7 @@ services:
       context: ./backend
       args:
         BUILD_IMAGE_INDEX: ${BUILD_IMAGE_INDEX:-0}
-    image: ${BACKEND_IMAGE:-rag-agent-backend}
+    image: rag-agent-backend
     environment:
       IMAGE_DEVICE: cpu
       IMAGE_INDEX_DIR: /app/data/vector_store/image

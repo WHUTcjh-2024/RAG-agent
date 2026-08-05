@@ -4,7 +4,7 @@
 
 **Goal:** 为生产部署提供可选、持久化的商品图片索引构建能力。
 
-**Architecture:** Dockerfile 使用 `BUILD_IMAGE_INDEX` 控制是否调用现有索引脚本。Compose 将开关从 `.env` 传入构建，为运行容器指定 `/app/data/vector_store/image`，并用固定的 `rag-agent-backend` 镜像名作为生产回退契约。
+**Architecture:** Dockerfile 使用 `BUILD_IMAGE_INDEX` 控制是否调用现有索引脚本。Compose 将开关从 `.env` 传入构建，为运行容器指定 `/app/data/vector_store/image`，并将 backend 镜像名硬编码为 `rag-agent-backend` 作为生产回退契约。`backend/.dockerignore` 排除旧的生成图片索引，保持构建上下文干净。
 
 **Tech Stack:** Dockerfile、Docker Compose、Python CLIP 索引脚本、pytest。
 
@@ -13,7 +13,8 @@
 - 不修改 `backend/app/` 的 Python RAG 业务逻辑或 API。
 - 不提交天池图片、CSV、SQLite 数据库或生成索引。
 - `BUILD_IMAGE_INDEX` 默认值为 `0`。
-- backend 镜像默认名固定为 `rag-agent-backend`；图片索引构建前的备份和回退只能使用这一稳定标签，不依赖 Compose 自动生成的镜像名。
+- backend 镜像名硬编码为 `rag-agent-backend`，不允许通过环境变量覆盖；图片索引构建前的备份和回退只能使用这一稳定标签，不依赖 Compose 自动生成的镜像名。
+- `backend/.dockerignore` 必须排除 `data/vector_store/image/`，防止工作目录中旧的生成索引进入 Docker 构建上下文。
 - 生产索引使用 CPU 和 `--batch_size 8`。
 
 ---
@@ -72,6 +73,7 @@ Expected: Docker 命令 exit code `0`，提交只包含 Dockerfile。
 **Files:**
 - Modify: `docker-compose.yml:2-11`
 - Modify: `.env.example:1-8`
+- Modify: `backend/.dockerignore`
 - Test: `docker compose --env-file .env.example config --quiet`
 
 **Interfaces:**
@@ -93,7 +95,7 @@ build:
   context: ./backend
   args:
     BUILD_IMAGE_INDEX: ${BUILD_IMAGE_INDEX:-0}
-image: ${BACKEND_IMAGE:-rag-agent-backend}
+image: rag-agent-backend
 ```
 
 并在 `backend.environment` 中添加：
@@ -105,8 +107,6 @@ IMAGE_INDEX_DIR: /app/data/vector_store/image
 在 `.env.example` 索引配置区加入：
 
 ```dotenv
-# backend 镜像固定名称，供图片索引构建前的备份与回退使用。
-BACKEND_IMAGE=rag-agent-backend
 # 生产镜像构建时设为 1，生成 CLIP 商品图片索引；日常开发和 CI 保持 0。
 BUILD_IMAGE_INDEX=0
 ```
@@ -156,7 +156,7 @@ docker compose up -d backend
 curl --fail http://127.0.0.1:18000/health
 ```
 
-`rag-agent-backend` 由 Compose 的 `image` 配置固定，是上述备份和下述回退命令的契约名称。要求确认响应中的 `image_index` 为 `true`。回退命令为：
+`rag-agent-backend` 由 Compose 的硬编码 `image` 配置固定，不能通过 `.env` 覆盖，是上述备份和下述回退命令的契约名称。`backend/.dockerignore` 排除 `data/vector_store/image/`，确保旧的生成索引不会进入镜像构建上下文。要求确认响应中的 `image_index` 为 `true`。回退命令为：
 
 ```bash
 docker image tag rag-agent-backend:before-image-index rag-agent-backend

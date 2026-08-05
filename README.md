@@ -58,7 +58,7 @@ else
   echo 'BUILD_IMAGE_INDEX=1' >> .env
 fi
 
-# Compose 默认将 backend 固定命名为 rag-agent-backend；为其保留可回退的标签。
+# Compose 将 backend 镜像硬编码为 rag-agent-backend；为其保留可回退的标签。
 docker image tag rag-agent-backend rag-agent-backend:before-image-index
 docker compose build backend
 docker compose up -d backend
@@ -74,6 +74,8 @@ curl --fail --silent http://127.0.0.1:18000/health \
 docker image tag rag-agent-backend:before-image-index rag-agent-backend
 docker compose up -d --no-build backend
 ```
+
+`backend/.dockerignore` 会排除 `data/vector_store/image/`，因此构建始终从干净的图片索引上下文开始；旧的生成索引不会被复制进镜像。
 
 详情见 [Java 后端部署说明](java-backend/README.md)。
 
