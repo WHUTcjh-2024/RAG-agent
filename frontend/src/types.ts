@@ -119,6 +119,31 @@ export interface CartItem {
   updatedAt: string;
 }
 
+export type OrderStatus = "PENDING_PAYMENT" | "CANCELLED";
+
+export interface OrderSummary {
+  id: string;
+  status: OrderStatus;
+  totalAmount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrderItem {
+  id: string;
+  productId: string;
+  productName: string;
+  productImageUrl?: string | null;
+  unitPrice: number;
+  quantity: number;
+  subtotal: number;
+  createdAt: string;
+}
+
+export interface OrderDetail extends OrderSummary {
+  items: OrderItem[];
+}
+
 export interface PendingCartAction {
   action_id: string;
   action_type: "ADD_CART_ITEM";

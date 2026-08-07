@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Slots, ToolTrace } from "../types";
-import { ApiClientError, buildProductQuery, fetchProducts, phaseForNode, streamChat } from "./client";
+import {
+  ApiClientError,
+  buildProductQuery,
+  cancelOrder,
+  createOrder,
+  fetchOrderDetail,
+  fetchOrders,
+  fetchProducts,
+  phaseForNode,
+  streamChat
+} from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -190,6 +200,154 @@ describe("buildProductQuery", () => {
       onWardrobePlan: vi.fn(),
       onMessage: vi.fn(),
       onError: vi.fn()
+    });
+  });
+});
+
+describe("order APIs", () => {
+  it("creates an order with authorization and idempotency headers", async () => {
+    const orderDetail = {
+      id: "order-1",
+      status: "PENDING_PAYMENT",
+      totalAmount: 199.5,
+      createdAt: "2026-08-07T10:00:00Z",
+      updatedAt: "2026-08-07T10:05:00Z",
+      items: [
+        {
+          id: "item-1",
+          productId: "prod-1",
+          productName: "Linen Shirt",
+          productImageUrl: "https://cdn.example.com/shirt.jpg",
+          unitPrice: 99.75,
+          quantity: 2,
+          subtotal: 199.5,
+          createdAt: "2026-08-07T10:00:00Z"
+        }
+      ]
+    };
+
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: {
+          Authorization: "Bearer token-123",
+          "Idempotency-Key": "idem-123"
+        }
+      });
+      expect(init?.body).toBeUndefined();
+      return new Response(JSON.stringify(orderDetail), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createOrder("token-123", "idem-123")).resolves.toEqual(orderDetail);
+    expect(fetchMock).toHaveBeenCalledWith("/api/orders", expect.any(Object));
+  });
+
+  it("parses order summaries from the list response", async () => {
+    const orders = [
+      {
+        id: "order-1",
+        status: "PENDING_PAYMENT",
+        totalAmount: 120,
+        createdAt: "2026-08-07T10:00:00Z",
+        updatedAt: "2026-08-07T10:05:00Z"
+      },
+      {
+        id: "order-2",
+        status: "CANCELLED",
+        totalAmount: 89,
+        createdAt: "2026-08-06T10:00:00Z",
+        updatedAt: "2026-08-06T11:00:00Z"
+      }
+    ];
+
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.method).toBeUndefined();
+      expect(init?.headers).toEqual({ Authorization: "Bearer token-123" });
+      return new Response(JSON.stringify({ orders }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchOrders("token-123")).resolves.toEqual(orders);
+    expect(fetchMock).toHaveBeenCalledWith("/api/orders", expect.any(Object));
+  });
+
+  it("fetches order detail and cancel responses with encoded order ids", async () => {
+    const orderDetail = {
+      id: "order/needs encoding",
+      status: "PENDING_PAYMENT",
+      totalAmount: 199.5,
+      createdAt: "2026-08-07T10:00:00Z",
+      updatedAt: "2026-08-07T10:05:00Z",
+      items: []
+    };
+
+    const fetchMock = vi
+      .fn<(_url: string, init?: RequestInit) => Promise<Response>>()
+      .mockImplementationOnce(async (url, init) => {
+        expect(url).toBe("/api/orders/order%2Fneeds%20encoding");
+        expect(init).toMatchObject({
+          headers: { Authorization: "Bearer token-123" }
+        });
+        return new Response(JSON.stringify(orderDetail), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      })
+      .mockImplementationOnce(async (url, init) => {
+        expect(url).toBe("/api/orders/order%2Fneeds%20encoding/cancel");
+        expect(init).toMatchObject({
+          method: "POST",
+          headers: { Authorization: "Bearer token-123" }
+        });
+        expect(init?.body).toBeUndefined();
+        return new Response(JSON.stringify({ ...orderDetail, status: "CANCELLED" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchOrderDetail("token-123", "order/needs encoding")).resolves.toEqual(orderDetail);
+    await expect(cancelOrder("token-123", "order/needs encoding")).resolves.toEqual({
+      ...orderDetail,
+      status: "CANCELLED"
+    });
+  });
+
+  it("keeps ApiClientError typing for order failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      detail: "order invalid",
+      error: {
+        request_id: "request-order-400",
+        code: "ORDER_INVALID",
+        message: "order invalid",
+        retryable: false,
+        stage: "create_order",
+        details: {}
+      }
+    }), {
+      status: 400,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-Id": "request-order-400"
+      }
+    })));
+
+    const error = await createOrder("token-123", "idem-123").catch((cause) => cause);
+    expect(error).toBeInstanceOf(ApiClientError);
+    expect(error).toMatchObject({
+      message: "order invalid",
+      status: 400,
+      code: "ORDER_INVALID",
+      requestId: "request-order-400",
+      retryable: false
     });
   });
 });

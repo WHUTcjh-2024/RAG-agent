@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, OrderDetail, OrderSummary, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 import { createClientId } from "../utils/clientId";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
@@ -290,6 +290,34 @@ export async function fetchCart(token: string): Promise<CartItem[]> {
     headers: authorized(token)
   }));
   return (await response.json()).items;
+}
+
+export async function createOrder(token: string, idempotencyKey: string): Promise<OrderDetail> {
+  const response = await ensureOk(await fetch("/api/orders", {
+    method: "POST",
+    headers: { ...authorized(token), "Idempotency-Key": idempotencyKey }
+  }));
+  return response.json();
+}
+
+export async function fetchOrders(token: string): Promise<OrderSummary[]> {
+  const response = await ensureOk(await fetch("/api/orders", {
+    headers: authorized(token)
+  }));
+  return (await response.json()).orders;
+}
+
+export async function fetchOrderDetail(token: string, orderId: string): Promise<OrderDetail> {
+  return (await ensureOk(await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+    headers: authorized(token)
+  }))).json();
+}
+
+export async function cancelOrder(token: string, orderId: string): Promise<OrderDetail> {
+  return (await ensureOk(await fetch(`/api/orders/${encodeURIComponent(orderId)}/cancel`, {
+    method: "POST",
+    headers: authorized(token)
+  }))).json();
 }
 
 export async function addCart(token: string, product: Product): Promise<CartItem> {
