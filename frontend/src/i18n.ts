@@ -168,11 +168,30 @@ const copy = {
     candidates: "Candidate set", evidence: "Recommendation evidence", waiting: "Waiting for your input", noExecution: "Submit a request and real workflow nodes will appear here.",
     confirmAdd: "Confirm add to cart", wardrobe: "Digital wardrobe plan", adoptPlan: "Adopt plan", networkOffline: "Network is offline; core browsing remains available",
     networkOnline: "Network restored", retry: "Retry", requestFailed: "Request failed", unable: "Unable to complete request: ", addFailed: "Could not add item",
-    compareFailed: "Comparison failed", detailFailed: "Could not load details", removeFailed: "Could not remove item", similarImage: "Find similar image"
+    compareFailed: "Comparison failed", detailFailed: "Could not load details", removeFailed: "Could not remove item", similarImage: "Find similar image",
+    submitOrder: "Place order", submittingOrder: "Placing order...", orderCreated: "Order created", orderCreateFailed: "Could not place order",
+    orders: "My orders", ordersLoginCopy: "Sign in to view your order history", ordersLoading: "Loading orders...", ordersLoadFailed: "Could not load orders",
+    ordersEmpty: "No orders yet", ordersEmptyCopy: "Your completed checkout will appear here.", ordersEmptyAction: "Discover products",
+    orderNumber: "ORDER", orderTotal: "Total", orderPendingPayment: "Pending payment", orderCancelled: "Cancelled", cancelOrder: "Cancel order", cancellingOrder: "Cancelling...", orderCancelFailed: "Could not cancel order"
   }
 } as const;
 
-type CopyKey = keyof typeof copy.zh;
+const orderCopy = {
+  zh: {
+    submitOrder: "提交订单", submittingOrder: "正在提交订单...", orderCreated: "订单已创建", orderCreateFailed: "提交订单失败",
+    orders: "我的订单", ordersLoginCopy: "登录后可查看订单记录", ordersLoading: "正在加载订单...", ordersLoadFailed: "订单加载失败",
+    ordersEmpty: "还没有订单", ordersEmptyCopy: "完成结算后的订单会显示在这里。", ordersEmptyAction: "去发现商品",
+    orderNumber: "订单号", orderTotal: "合计", orderPendingPayment: "待支付", orderCancelled: "已取消", cancelOrder: "取消订单", cancellingOrder: "正在取消...", orderCancelFailed: "取消订单失败"
+  },
+  en: {
+    submitOrder: "Place order", submittingOrder: "Placing order...", orderCreated: "Order created", orderCreateFailed: "Could not place order",
+    orders: "My orders", ordersLoginCopy: "Sign in to view your order history", ordersLoading: "Loading orders...", ordersLoadFailed: "Could not load orders",
+    ordersEmpty: "No orders yet", ordersEmptyCopy: "Your completed checkout will appear here.", ordersEmptyAction: "Discover products",
+    orderNumber: "ORDER", orderTotal: "Total", orderPendingPayment: "Pending payment", orderCancelled: "Cancelled", cancelOrder: "Cancel order", cancellingOrder: "Cancelling...", orderCancelFailed: "Could not cancel order"
+  }
+} as const;
+
+type CopyKey = keyof typeof copy.zh | keyof typeof orderCopy.zh;
 const initial = (localStorage.getItem("atelier-language") === "en" ? "en" : "zh") as Language;
 document.documentElement.lang = initial === "zh" ? "zh-CN" : "en";
 
@@ -188,7 +207,8 @@ export const useI18n = create<{ language: Language; setLanguage: (language: Lang
 export function useTranslation() {
   const { language, setLanguage } = useI18n();
   const t = (key: CopyKey, variables?: Record<string, string | number>) => {
-    let value: string = copy[language][key];
+    let value: string = (orderCopy[language] as Record<string, string>)[key]
+      ?? (copy[language] as Record<string, string>)[key];
     for (const [name, replacement] of Object.entries(variables || {})) {
       value = value.replace(`{${name}}`, String(replacement));
     }

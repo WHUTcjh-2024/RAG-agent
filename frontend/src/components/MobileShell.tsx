@@ -16,6 +16,7 @@ const titles: Record<string, [string, string]> = {
   "/agent": ["FitMe Agent", "FitMe Agent"],
   "/discover": ["发现单品", "Discover"],
   "/profile": ["我的", "Profile"],
+  "/orders": ["我的订单", "Orders"],
   "/compare": ["单品对比", "Compare"]
 };
 

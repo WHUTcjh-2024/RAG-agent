@@ -4,8 +4,10 @@ import { GitCompareArrows, X } from "lucide-react";
 import { createClientId } from "./utils/clientId";
 import {
   addCart,
+  cancelOrder,
   cancelAgentTask,
   clearCart,
+  createOrder,
   compareProducts,
   confirmAgentCartAction,
   fetchCart,
@@ -13,6 +15,8 @@ import {
   fetchFacets,
   fetchProduct,
   fetchProducts,
+  fetchOrderDetail,
+  fetchOrders,
   fetchSession,
   fetchWardrobe,
   login,
@@ -28,6 +32,7 @@ import { CartDrawer, AuthOverlay, CartFlight, NetworkNotice, type Flight } from 
 import { HomeScreen } from "./components/HomeScreen";
 import { AppTopBar, BottomNavigation } from "./components/MobileShell";
 import { ProductCollection } from "./components/ProductCollection";
+import { OrdersScreen } from "./components/OrdersScreen";
 import { ProfileScreen } from "./components/ProfileScreen";
 import { WardrobeScreen } from "./components/WardrobeScreen";
 import { useTranslation } from "./i18n";
@@ -35,7 +40,7 @@ import { useMotionSystem } from "./motion/MotionSystem";
 import { PageTransition } from "./motion/PageTransition";
 import { motionTokens } from "./motion/tokens";
 import { useAppStore } from "./store/useAppStore";
-import type { AgentNodeEvent, AgentPhase, DecisionEvidence, Product, ProductFacets, ProductQuery } from "./types";
+import type { AgentNodeEvent, AgentPhase, DecisionEvidence, OrderDetail, Product, ProductFacets, ProductQuery } from "./types";
 
 type ViewTransitionDocument = Document & { startViewTransition?: (update: () => void) => { finished: Promise<void> } };
 type AgentViewState = "idle" | AgentPhase;
@@ -50,6 +55,11 @@ export default function App() {
   const store = useAppStore();
   const [pathname, setPathname] = useState(() => window.location.pathname);
   const [cartOpen, setCartOpen] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [orders, setOrders] = useState<OrderDetail[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState("");
+  const [cancellingOrderId, setCancellingOrderId] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState<ProductQuery>({ page: 1, pageSize: 12, sort: "popular" });
@@ -277,6 +287,42 @@ export default function App() {
     try { await clearCart(store.accessToken); store.setCart([]); }
     catch (error) { setNotice(error instanceof Error ? error.message : t("clearCartFailed")); }
   };
+  const refreshOrders = useCallback(async () => {
+    if (!store.accessToken) return;
+    setOrdersLoading(true); setOrdersError("");
+    try {
+      const summaries = await fetchOrders(store.accessToken);
+      setOrders(await Promise.all(summaries.map((order) => fetchOrderDetail(store.accessToken, order.id))));
+    } catch (error) {
+      setOrdersError(error instanceof Error ? error.message : "Could not load orders");
+    } finally { setOrdersLoading(false); }
+  }, [store.accessToken]);
+  useEffect(() => {
+    if (pathname === "/orders" && store.accessToken) void refreshOrders();
+  }, [pathname, store.accessToken, refreshOrders]);
+  const cancelExistingOrder = async (orderId: string) => {
+    if (!store.accessToken || cancellingOrderId) return;
+    setCancellingOrderId(orderId);
+    try {
+      await cancelOrder(store.accessToken, orderId);
+      await refreshOrders();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("orderCancelFailed"));
+    } finally { setCancellingOrderId(null); }
+  };
+  const checkout = async () => {
+    if (!store.accessToken || store.cart.length === 0 || checkoutBusy) return;
+    setCheckoutBusy(true);
+    try {
+      await createOrder(store.accessToken, `checkout-${createClientId()}`);
+      store.setCart(await fetchCart(store.accessToken));
+      setCartOpen(false);
+      setNotice(t("orderCreated"));
+      transitionNavigate("/orders");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("orderCreateFailed"));
+    } finally { setCheckoutBusy(false); }
+  };
 
   const collection = (
     <ProductCollection
@@ -294,7 +340,9 @@ export default function App() {
   ) : pathname === "/discover" ? (
     collection
   ) : pathname === "/profile" ? (
-    <ProfileScreen user={store.user} cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)} wardrobeCount={store.wardrobe?.items.length || 0} compareCount={store.compareIds.length} onAuth={() => setAuthOpen(true)} onLogout={logout} />
+    <ProfileScreen user={store.user} cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)} wardrobeCount={store.wardrobe?.items.length || 0} compareCount={store.compareIds.length} onAuth={() => setAuthOpen(true)} onLogout={logout} onOrders={() => transitionNavigate("/orders")} />
+  ) : pathname === "/orders" ? (
+    <OrdersScreen authenticated={Boolean(store.user)} orders={orders} loading={ordersLoading} error={ordersError} cancellingOrderId={cancellingOrderId} onLogin={() => setAuthOpen(true)} onDiscover={() => transitionNavigate("/discover")} onCancel={cancelExistingOrder} />
   ) : pathname.startsWith("/product/") ? (
     <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} onAskAgent={(message) => { lastAgentRequest.current = { message, image: null, preview: null }; transitionNavigate("/agent"); window.setTimeout(() => submitAgent(message, null, null), 420); }} /> : loadingPage}</Suspense>
   ) : pathname === "/compare" ? (
@@ -305,7 +353,7 @@ export default function App() {
     <HomeScreen products={appProducts} agentState={agentState} events={agentEvents} wardrobe={store.wardrobe} onAgent={() => transitionNavigate("/agent")} onWardrobe={() => transitionNavigate("/wardrobe")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
   );
 
-  const rootScreen = ["/", "/wardrobe", "/agent", "/discover", "/profile"].includes(pathname);
+  const rootScreen = ["/", "/wardrobe", "/agent", "/discover", "/profile", "/orders"].includes(pathname);
   const cartCount = store.cart.reduce((count, item) => count + item.quantity, 0);
 
   return (
@@ -328,7 +376,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <CartDrawer open={cartOpen} authenticated={Boolean(store.user)} cart={store.cart} onClose={() => setCartOpen(false)} onLogin={() => { setCartOpen(false); setAuthOpen(true); }} onRemove={async (id) => { if (!store.accessToken) return; try { await removeCart(store.accessToken, id); store.setCart(await fetchCart(store.accessToken)); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onClear={emptyCart} />
+        <CartDrawer open={cartOpen} authenticated={Boolean(store.user)} cart={store.cart} onClose={() => setCartOpen(false)} onLogin={() => { setCartOpen(false); setAuthOpen(true); }} onRemove={async (id) => { if (!store.accessToken) return; try { await removeCart(store.accessToken, id); store.setCart(await fetchCart(store.accessToken)); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onClear={emptyCart} onCheckout={checkout} checkoutBusy={checkoutBusy} />
         <AuthOverlay open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
         <CartFlight flight={flight} />
         <NetworkNotice />

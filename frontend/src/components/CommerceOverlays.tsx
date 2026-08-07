@@ -30,9 +30,11 @@ type CartProps = {
   onLogin: () => void;
   onRemove: (id: string) => void;
   onClear: () => void;
+  onCheckout: () => Promise<void>;
+  checkoutBusy: boolean;
 };
 
-export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemove, onClear }: CartProps) {
+export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemove, onClear, onCheckout, checkoutBusy }: CartProps) {
   const { t } = useTranslation();
   const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   return (
@@ -53,7 +55,7 @@ export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemo
               ))}
             </AnimatePresence>
           </div>
-          <footer className="cart-footer"><div><span>Total</span><strong>{total.toFixed(4)}</strong></div><button onClick={onClear}>{t("clearCart")}</button></footer>
+          <footer className="cart-footer"><div><span>Total</span><strong>{total.toFixed(4)}</strong></div><button type="button" disabled={checkoutBusy} onClick={() => void onCheckout()}>{checkoutBusy ? t("submittingOrder") : t("submitOrder")}</button><button type="button" disabled={checkoutBusy} onClick={onClear}>{t("clearCart")}</button></footer>
         </div>
       )}
     </SpatialShell>
