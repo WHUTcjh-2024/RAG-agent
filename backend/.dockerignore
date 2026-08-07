@@ -3,3 +3,4 @@ __pycache__
 .pytest_cache
 tests
 data/sqlite/sessions.db
+data/vector_store/image/
