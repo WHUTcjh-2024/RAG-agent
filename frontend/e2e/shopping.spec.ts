@@ -38,6 +38,23 @@ const cartItem = {
 
 async function mockApi(page: Page, restoredCart: typeof products = []) {
   let javaCart = restoredCart.length ? [cartItem] : [];
+  let orders = [{
+    id: "00000000-0000-0000-0000-000000000201",
+    status: "PENDING_PAYMENT" as const,
+    totalAmount: cartItem.unitPrice * cartItem.quantity,
+    createdAt: "2026-08-07T00:00:00Z",
+    updatedAt: "2026-08-07T00:00:00Z",
+    items: [{
+      id: "00000000-0000-0000-0000-000000000301",
+      productId: cartItem.productId,
+      productName: cartItem.productName,
+      productImageUrl: cartItem.productImageUrl,
+      unitPrice: cartItem.unitPrice,
+      quantity: cartItem.quantity,
+      subtotal: cartItem.unitPrice * cartItem.quantity,
+      createdAt: "2026-08-07T00:00:00Z"
+    }]
+  }];
   await page.route("**/media/**", route => route.fulfill({
     contentType: "image/svg+xml",
     body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><rect width="30" height="40" fill="#ddd"/></svg>'
@@ -68,6 +85,22 @@ async function mockApi(page: Page, restoredCart: typeof products = []) {
     } else {
       route.fulfill({ json: { items: javaCart } });
     }
+  });
+  await page.route(/\/api\/orders$/, route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { orders: orders.map(({ items, ...order }) => order) } });
+    if (route.request().method() !== "POST") return route.fallback();
+    expect(route.request().headers()["idempotency-key"]).toBeTruthy();
+    javaCart = [];
+    return route.fulfill({ json: orders[0] });
+  });
+  await page.route(/\/api\/orders\/.+/, route => {
+    const orderId = route.request().url().replace(/\/cancel$/, "").split("/").at(-1);
+    const order = orders.find((item) => item.id === orderId);
+    if (route.request().method() === "POST") {
+      orders = orders.map((item) => item.id === order?.id ? { ...item, status: "CANCELLED" as const, updatedAt: "2026-08-07T00:05:00Z" } : item);
+      return route.fulfill({ json: orders.find((item) => item.id === order?.id) });
+    }
+    return route.fulfill({ json: order });
   });
   await page.route(/\/api\/products\?.*/, route => route.fulfill({ json: {
     page: Number(new URL(route.request().url()).searchParams.get("page") || 1),
@@ -119,6 +152,30 @@ test("restores persisted cart after reload", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("打开购物袋").click();
   await expect(page.getByText("White Office Shirt").last()).toBeVisible();
+});
+
+test("places an order from a nonempty authenticated cart", async ({ page }) => {
+  await mockApi(page, [products[0]]);
+  await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
+  await page.goto("/");
+  await page.getByLabel("打开购物袋").click();
+  const checkout = page.getByRole("button", { name: "提交订单" });
+  await expect(checkout).toBeVisible();
+  await checkout.click();
+  await expect(page).toHaveURL(/\/orders$/);
+});
+
+test("shows authenticated order snapshots and cancels a pending payment order", async ({ page }) => {
+  await mockApi(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("atelier-access-token", "e2e-token");
+    localStorage.setItem("atelier-language", "en");
+  });
+  await page.goto("/orders");
+  await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
+  await expect(page.getByText("White Office Shirt")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel order" }).click();
+  await expect(page.getByText("Cancelled")).toBeVisible();
 });
 
 test("uploads an image and renders streamed grounded recommendations", async ({ page }) => {
