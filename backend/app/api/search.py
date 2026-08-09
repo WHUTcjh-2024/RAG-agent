@@ -4,7 +4,6 @@ import os
 import io
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -14,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.text_retriever import TextRetriever
+from app.core.catalog_paths import get_image_index_dir, get_text_index_dir
 
 
 router = APIRouter(tags=["search"])
@@ -48,28 +48,20 @@ class HybridSearchResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_text_retriever() -> TextRetriever:
-    default_index = (
-        Path(__file__).resolve().parents[2] / "data" / "vector_store" / "text"
-    )
-    index_dir = Path(os.getenv("TEXT_INDEX_DIR", str(default_index)))
-    return TextRetriever(index_dir=index_dir)
+    return TextRetriever(index_dir=get_text_index_dir())
 
 
 @lru_cache(maxsize=1)
 def get_image_retriever() -> ImageRetriever:
-    default_index = (
-        Path(__file__).resolve().parents[2] / "data" / "vector_store" / "image"
-    )
-    index_dir = Path(os.getenv("IMAGE_INDEX_DIR", str(default_index)))
+    index_dir = get_image_index_dir()
     device = os.getenv("IMAGE_DEVICE", "auto")
     return ImageRetriever(index_dir=index_dir, device=device)
 
 
 @lru_cache(maxsize=1)
 def get_hybrid_retriever() -> HybridRetriever:
-    data_dir = Path(__file__).resolve().parents[2] / "data" / "vector_store"
-    text_index_dir = Path(os.getenv("TEXT_INDEX_DIR", str(data_dir / "text")))
-    image_index_dir = Path(os.getenv("IMAGE_INDEX_DIR", str(data_dir / "image")))
+    text_index_dir = get_text_index_dir()
+    image_index_dir = get_image_index_dir()
     device = os.getenv("IMAGE_DEVICE", "auto")
     return HybridRetriever(
         text_index_dir=text_index_dir,

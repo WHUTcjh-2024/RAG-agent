@@ -2,7 +2,7 @@
 
 ## 目标
 
-将本项目的演示商品目录从 H&M 样本替换为天池公开的“淘宝服装搭配数据集（Fashion Collection Dataset）”。首次构建固定导入 5,000 件带有可用图片的商品，同时保持现有 Java 用户、购物车、订单接口以及 Python RAG 查询接口不变。
+将本项目的演示商品目录切换为天池公开的“淘宝服装搭配数据集（Fashion Collection Dataset）”。首次构建固定导入 5,000 件带有可用图片的商品，同时保持现有 Java 用户、购物车、订单接口以及 Python RAG 查询接口不变。
 
 ## 范围与约束
 
@@ -14,7 +14,7 @@
 
 ## 设计选择
 
-采用“新增天池导入器，复用既有商品契约”的方案，而不直接改写或删除 H&M 导入脚本。
+采用“天池导入器复用既有商品契约”的方案，并移除不再使用的旧数据源脚本。
 
 现有服务已经将商品图片路径转换为 `/media/<相对路径>`，并通过 Java 网关代理给 Python 静态资源服务。因此导入器只要生成与当前目录契约一致的商品 CSV、图片目录和 SQLite 库，调用方无需变更。
 
@@ -30,11 +30,11 @@
 
 导入完成后生成以下现有运行时文件：
 
-- `backend/data/sample/articles_sample.csv`：规范化后的 5,000 条商品记录。
-- `backend/data/sample/images/`：每条商品记录对应的一张图片，`image_path` 必须相对该目录且不可越界。
+- `backend/data/tianchi-catalog/articles_sample.csv`：规范化后的 5,000 条商品记录。
+- `backend/data/tianchi-catalog/images/`：每条商品记录对应的一张图片，`image_path` 必须相对该目录且不可越界。
 - `backend/data/sqlite/app.db`：由现有 `build_sqlite.py` 生成的商品库。
 - `backend/data/vector_store/text/`：由现有 `build_text_index.py` 生成的文本检索索引。
-- `backend/data/sample/catalog_manifest.json`：记录来源名称、导入时间、随机种子、商品数、图片数和各输出文件 SHA-256，用于复现与部署校验。
+- `backend/data/tianchi-catalog/catalog_manifest.json`：记录来源名称、导入时间、随机种子、商品数、图片数和各输出文件 SHA-256，用于复现与部署校验。
 
 输出先写入同级临时目录，所有校验通过后再原子替换正式目录，避免部署中断时留下半成品。
 
@@ -69,7 +69,7 @@
 ## 部署方式
 
 1. 在开发机导入数据、构建 SQLite 库和文本索引。
-2. 将 `backend/data/sample/images/`、`backend/data/sample/articles_sample.csv`、`backend/data/sample/catalog_manifest.json` 与 `backend/data/sqlite/app.db` 上传至虚拟机对应目录；不上传 `backend/data/vector_store/text/`。
+2. 将 `backend/data/tianchi-catalog/images/`、`backend/data/tianchi-catalog/articles_sample.csv`、`backend/data/tianchi-catalog/catalog_manifest.json` 与 `backend/data/sqlite/app.db` 上传至虚拟机对应目录；不上传 `backend/data/vector_store/text/`。
 3. 在重建前将虚拟机已有的 `backend/data/vector_store/text/` 移到仓库外、带时间戳的 `/root/catalog-backups/` 备份目录。Docker 在构建 `backend` 镜像时生成文本索引；Java 和 frontend 服务无需因数据更新而重建。
 4. 在虚拟机验证 `/api/products` 返回 5,000 条目录规模，并随机请求一个 `/media/...` 图片返回 `200`。
 

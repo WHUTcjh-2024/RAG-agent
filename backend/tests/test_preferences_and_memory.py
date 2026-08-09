@@ -59,8 +59,8 @@ def test_commerce_fields_are_explicit_without_fabricated_inventory() -> None:
     assert product["sku"] == "0000000001"
     assert product["price_info"] == {
         "amount": 0.05,
-        "currency": "H&M_DATASET_NORMALIZED",
-        "source": "transactions_train.mean",
+        "currency": "CNY",
+        "source": "tianchi_demo_price",
     }
     assert product["available_sizes"] == []
     assert product["inventory_status"] == "unknown"

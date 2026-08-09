@@ -7,6 +7,8 @@ services:
     image: rag-agent-backend
     environment:
       IMAGE_DEVICE: cpu
+      CATALOG_DIR: /app/data/tianchi-catalog
+      CATALOG_IMAGE_DIR: /app/data/tianchi-catalog/images
       IMAGE_INDEX_DIR: /app/data/vector_store/image
       SESSION_DB_PATH: /app/data/sqlite/sessions.db
       AGENT_FACTS_BASE_URL: http://java-backend:8080

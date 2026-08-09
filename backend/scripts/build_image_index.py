@@ -18,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.image_encoder import DEFAULT_CLIP_MODEL, create_image_encoder
+from data_utils import DEFAULT_CATALOG_DIR, resolve_catalog_csv
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input_csv",
         type=Path,
-        default=BACKEND_DIR / "data" / "sample" / "articles_sample.csv",
+        default=DEFAULT_CATALOG_DIR / "articles_sample.csv",
     )
     parser.add_argument(
         "--image_root",
@@ -133,7 +134,7 @@ def main() -> int:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch_size must be greater than zero.")
-    input_csv = args.input_csv.resolve()
+    input_csv = resolve_catalog_csv(args.input_csv)
     image_root = (args.image_root or input_csv.parent).resolve()
     index_dir = args.index_dir.resolve()
 

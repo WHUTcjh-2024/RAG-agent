@@ -87,7 +87,7 @@ backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py `
 
 ## 发布到 VMware 虚拟机
 
-以下步骤假设虚拟机项目目录为 `/root/RAG-agent`。先从 Windows 把四类产物上传到新的发布目录，不能直接上传到正在运行的 `backend/data/sample/` 或 `backend/data/sqlite/`。
+以下步骤假设虚拟机项目目录为 `/root/RAG-agent`。先从 Windows 把四类产物上传到新的发布目录，不能直接上传到正在运行的 `backend/data/tianchi-catalog/` 或 `backend/data/sqlite/`。
 
 ```powershell
 $release = "tianchi-20260803-001"
@@ -110,7 +110,7 @@ test -f "$release/catalog_manifest.json"
 test -f "$release/app.db"
 
 backup_dir="/root/catalog-backups/tianchi-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$backup_dir" backend/data/sample backend/data/sqlite
+mkdir -p "$backup_dir" backend/data/tianchi-catalog backend/data/sqlite
 backend_container=$(docker compose ps -q backend)
 test -n "$backend_container"
 backend_image=$(docker inspect --format '{{.Image}}' "$backend_container")
@@ -135,7 +135,7 @@ rollback() {
   rollback_failed=0
   docker compose stop backend || rollback_failed=1
   for item in images articles_sample.csv catalog_manifest.json; do
-    target="backend/data/sample/$item"
+    target="backend/data/tianchi-catalog/$item"
     move_if_present "$target" "$backup_dir/failed-$item" || rollback_failed=1
     move_if_present "$backup_dir/$item" "$target" || rollback_failed=1
   done
@@ -163,7 +163,7 @@ rollback() {
 trap rollback ERR
 
 for item in images articles_sample.csv catalog_manifest.json; do
-  target="backend/data/sample/$item"
+  target="backend/data/tianchi-catalog/$item"
   if [ -e "$target" ] || [ -L "$target" ]; then mv "$target" "$backup_dir/$item"; fi
 done
 if [ -e backend/data/sqlite/app.db ] || [ -L backend/data/sqlite/app.db ]; then
@@ -174,9 +174,9 @@ if [ -e backend/data/vector_store/text ] || [ -L backend/data/vector_store/text 
   mv backend/data/vector_store/text "$backup_dir/text"
 fi
 
-mv "$release/images" backend/data/sample/images
-mv "$release/articles_sample.csv" backend/data/sample/articles_sample.csv
-mv "$release/catalog_manifest.json" backend/data/sample/catalog_manifest.json
+mv "$release/images" backend/data/tianchi-catalog/images
+mv "$release/articles_sample.csv" backend/data/tianchi-catalog/articles_sample.csv
+mv "$release/catalog_manifest.json" backend/data/tianchi-catalog/catalog_manifest.json
 mv "$release/app.db" backend/data/sqlite/app.db
 
 docker compose build backend

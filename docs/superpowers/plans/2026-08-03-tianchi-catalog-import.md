@@ -317,7 +317,7 @@ Expected: FAIL，参数解析或出口码断言失败。
 --popularity-column NAME 可选
 --sample-size INTEGER    默认 5000
 --seed INTEGER           默认 42
---out-dir PATH           默认 backend/data/sample
+--out-dir PATH           默认 backend/data/tianchi-catalog
 ```
 
 所有异常都在 `if __name__ == "__main__"` 中打印 `ERROR: <message>` 并返回退出码 `1`。成功时打印 `SUCCESS: Tianchi catalog products=5000 images=5000`。
@@ -331,7 +331,7 @@ Expected: FAIL，参数解析或出口码断言失败。
 3. 导入后执行：
 
 ```powershell
-backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py --input_csv backend/data/sample/articles_sample.csv
+backend\.venv\Scripts\python.exe backend\scripts\build_sqlite.py --input_csv backend/data/tianchi-catalog/articles_sample.csv
 backend\.venv\Scripts\python.exe backend\scripts\build_text_index.py --backend hashing --force
 backend\.venv\Scripts\python.exe backend\scripts\inspect_data.py
 ```
@@ -422,7 +422,7 @@ Run:
 
 ```powershell
 git status --short
-git check-ignore backend/data/sample/images backend/data/sqlite/app.db backend/data/vector_store/text
+git check-ignore backend/data/tianchi-catalog backend/data/sqlite/app.db backend/data/vector_store/text
 ```
 
 Expected: `git status` 中只出现源码、测试和文档；三条运行数据路径均被忽略。

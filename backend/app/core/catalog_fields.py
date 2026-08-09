@@ -5,7 +5,7 @@ from typing import Any
 
 
 def enrich_commerce_fields(product: dict[str, Any]) -> dict[str, Any]:
-    """Expose honest commerce metadata without fabricating unavailable catalog facts."""
+    """Expose honest commerce metadata for the normalized Tianchi catalog."""
     item = dict(product)
     item["sku"] = str(item.get("sku") or item.get("article_id") or "")
     raw_sizes = item.get("available_sizes")
@@ -26,8 +26,8 @@ def enrich_commerce_fields(product: dict[str, Any]) -> dict[str, Any]:
     item["price_info"] = (
         {
             "amount": amount,
-            "currency": str(item.get("currency_code") or "H&M_DATASET_NORMALIZED"),
-            "source": str(item.get("price_source") or "transactions_train.mean"),
+            "currency": str(item.get("currency_code") or "CNY"),
+            "source": str(item.get("price_source") or "tianchi_demo_price"),
         }
         if amount is not None
         else None

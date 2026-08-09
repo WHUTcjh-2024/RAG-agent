@@ -18,8 +18,17 @@ from app.core.retrieval.hybrid_retriever import HybridRetriever
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate real H&M hybrid retrieval.")
-    parser.add_argument("--sample_csv", type=Path, required=True)
+    parser = argparse.ArgumentParser(
+        description="Validate hybrid retrieval on a real catalog."
+    )
+    parser.add_argument(
+        "--catalog_csv",
+        "--sample_csv",
+        dest="catalog_csv",
+        type=Path,
+        required=True,
+        help="Normalized catalog CSV; --sample_csv is retained as a compatibility alias.",
+    )
     parser.add_argument("--text_index_dir", type=Path, required=True)
     parser.add_argument("--image_index_dir", type=Path, required=True)
     parser.add_argument("--report_path", type=Path, required=True)
@@ -27,20 +36,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def select_query_product(sample_csv: Path) -> tuple[dict[str, str], Path]:
-    with sample_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+def select_query_product(catalog_csv: Path) -> tuple[dict[str, str], Path]:
+    with catalog_csv.open("r", encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
             relative = (row.get("image_path") or "").replace("/", "\\")
-            image_path = (sample_csv.parent / relative).resolve()
+            image_path = (catalog_csv.parent / relative).resolve()
             if image_path.is_file() and (row.get("article_id") or "").strip():
                 return row, image_path
-    raise RuntimeError("No sampled product with an existing image was found.")
+    raise RuntimeError("No catalog product with an existing image was found.")
 
 
 def main() -> int:
     args = parse_args()
-    sample_csv = args.sample_csv.resolve()
-    product, image_path = select_query_product(sample_csv)
+    catalog_csv = args.catalog_csv.resolve()
+    product, image_path = select_query_product(catalog_csv)
     query_parts = [
         product.get("prod_name", ""),
         product.get("product_type_name", ""),
@@ -70,17 +79,21 @@ def main() -> int:
 
     article_id = product["article_id"]
     rank = next(
-        (index for index, result in enumerate(results, start=1) if result["article_id"] == article_id),
+        (
+            index
+            for index, result in enumerate(results, start=1)
+            if result["article_id"] == article_id
+        ),
         None,
     )
     if rank is None:
         raise RuntimeError(
-            f"Real-data validation failed: query product {article_id} is not in top 5."
+            f"Catalog validation failed: query product {article_id} is not in top 5."
         )
     report = {
         "status": "passed",
         "validated_at": datetime.now(timezone.utc).isoformat(),
-        "sample_csv": str(sample_csv),
+        "catalog_csv": str(catalog_csv),
         "query_article_id": article_id,
         "query_image": str(image_path),
         "query": query,
@@ -95,7 +108,7 @@ def main() -> int:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
-    print(f"SUCCESS: real-data integration report written to {report_path}", flush=True)
+    print(f"SUCCESS: catalog integration report written to {report_path}", flush=True)
     return 0
 
 

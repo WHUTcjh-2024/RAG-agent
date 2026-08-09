@@ -2,17 +2,17 @@ import { expect, test, type Page } from "@playwright/test";
 
 const products = [
   {
-    article_id: "0000000001", sku: "0000000001", prod_name: "White Office Shirt",
+    article_id: "0000000001", sku: "0000000001", prod_name: "White Tianchi Office Shirt",
     product_type_name: "Shirt", colour_group_name: "White", garment_group_name: "Blouses",
-    detail_desc: "Cotton shirt for office wear.", image_url: "/media/one.jpg", price: 0.05,
-    price_info: { amount: 0.05, currency: "H&M_DATASET_NORMALIZED", source: "transactions_train.mean" },
+    detail_desc: "Cotton shirt for office wear.", image_url: "/media/one.jpg", price: 299,
+    price_info: { amount: 299, currency: "CNY", source: "tianchi_demo_price" },
     available_sizes: [], inventory_status: "unknown", popularity_score: 1
   },
   {
     article_id: "0000000002", sku: "0000000002", prod_name: "Black Evening Dress",
     product_type_name: "Dress", colour_group_name: "Black", garment_group_name: "Dresses",
-    detail_desc: "Simple evening dress.", image_url: "/media/two.jpg", price: 0.08,
-    price_info: { amount: 0.08, currency: "H&M_DATASET_NORMALIZED", source: "transactions_train.mean" },
+    detail_desc: "Simple evening dress.", image_url: "/media/two.jpg", price: 399,
+    price_info: { amount: 399, currency: "CNY", source: "tianchi_demo_price" },
     available_sizes: ["S", "M"], inventory_status: "in_stock", popularity_score: 0.8
   }
 ];
@@ -115,7 +115,7 @@ async function mockApi(page: Page, restoredCart: typeof products = []) {
 test("browse, filter, paginate and inspect honest commerce fields", async ({ page }) => {
   await mockApi(page);
   await page.goto("/discover");
-  await expect(page.getByText("White Office Shirt").first()).toBeVisible();
+  await expect(page.getByText("White Tianchi Office Shirt").first()).toBeVisible();
   await page.getByPlaceholder("搜索商品名称或描述").fill("office");
   await page.locator(".filter-toggle").click();
   await page.getByLabel("分类").selectOption("Shirt");
@@ -123,9 +123,9 @@ test("browse, filter, paginate and inspect honest commerce fields", async ({ pag
   await expect.poll(() => page.url()).toContain("127.0.0.1");
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.getByText("第 2 / 2 页")).toBeVisible();
-  await page.getByRole("button", { name: "查看 White Office Shirt 详情" }).click();
+  await page.getByRole("button", { name: "查看 White Tianchi Office Shirt 详情" }).click();
   await expect(page.getByText("商品详情")).toBeVisible();
-  await expect(page.getByText(/^0\.050000 H&M_DATASET_NORMALIZED$/)).toBeVisible();
+  await expect(page.getByText(/^299\.000000 CNY$/)).toBeVisible();
   await expect(page.getByText("数据源未提供").first()).toBeVisible();
 });
 
@@ -141,7 +141,7 @@ test("compare, add to Java cart and clear it", async ({ page }) => {
   await page.getByRole("button", { name: "关闭" }).click();
   await page.getByLabel("加入购物袋").first().click();
   await page.getByLabel("打开购物袋").click();
-  await expect(page.getByText("White Office Shirt").last()).toBeVisible();
+  await expect(page.getByText("White Tianchi Office Shirt").last()).toBeVisible();
   await page.getByRole("button", { name: "清空购物袋" }).click();
   await expect(page.getByText("购物袋还是空的")).toBeVisible();
 });
@@ -151,7 +151,7 @@ test("restores persisted cart after reload", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
   await page.goto("/");
   await page.getByLabel("打开购物袋").click();
-  await expect(page.getByText("White Office Shirt").last()).toBeVisible();
+  await expect(page.getByText("White Tianchi Office Shirt").last()).toBeVisible();
 });
 
 test("places an order from a nonempty authenticated cart", async ({ page }) => {
@@ -173,7 +173,7 @@ test("shows authenticated order snapshots and cancels a pending payment order", 
   });
   await page.goto("/orders");
   await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
-  await expect(page.getByText("White Office Shirt")).toBeVisible();
+  await expect(page.getByText("White Tianchi Office Shirt")).toBeVisible();
   await page.getByRole("button", { name: "Cancel order" }).click();
   await expect(page.getByText("Cancelled")).toBeVisible();
 });
@@ -308,7 +308,7 @@ test("keeps Agent evidence accessible on mobile and honors reduced motion", asyn
   await page.getByLabel("导购需求").fill("白色通勤款");
   await page.getByLabel("发送").click();
   await page.getByRole("button", { name: "依据" }).click();
-  await expect(page.getByText("White Office Shirt")).toBeVisible();
+  await expect(page.getByText("White Tianchi Office Shirt")).toBeVisible();
   await expect(page.getByText("color")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);

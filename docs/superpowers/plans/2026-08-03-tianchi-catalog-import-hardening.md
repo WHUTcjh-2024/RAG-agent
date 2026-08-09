@@ -114,7 +114,7 @@ def test_default_output_directory_is_ignored_runtime_catalog():
 - [ ] **Step 2: 运行失败测试**
 
 Run: `backend\\.venv\\Scripts\\python.exe -m pytest backend\\tests\\test_tianchi_catalog_import.py -q`
-Expected: FAIL，因为默认仍为受 Git 跟踪的 `data/sample`。
+Expected: FAIL，因为默认仍未切换到被 Git 忽略的 `data/tianchi-catalog`。
 
 - [ ] **Step 3: 写入最小实现和文档**
 
