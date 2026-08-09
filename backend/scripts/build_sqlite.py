@@ -5,13 +5,18 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from data_utils import BACKEND_DIR, SAMPLE_DIR, read_csv
+from data_utils import (
+    BACKEND_DIR,
+    DEFAULT_CATALOG_DIR,
+    read_csv,
+    resolve_catalog_csv,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build the local SQLite product catalog.")
     parser.add_argument(
-        "--input_csv", type=Path, default=SAMPLE_DIR / "product_profiles.csv"
+        "--input_csv", type=Path, default=DEFAULT_CATALOG_DIR / "articles_sample.csv"
     )
     parser.add_argument(
         "--db_path", type=Path, default=BACKEND_DIR / "data" / "sqlite" / "app.db"
@@ -21,12 +26,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    input_csv = args.input_csv.resolve()
+    input_csv = resolve_catalog_csv(args.input_csv)
     db_path = args.db_path.resolve()
-    print(f"[1/4] Reading product profiles: {input_csv}", flush=True)
+    print(f"[1/4] Reading normalized catalog: {input_csv}", flush=True)
     _, rows = read_csv(input_csv)
     if not rows:
-        raise RuntimeError("No product profiles found.")
+        raise RuntimeError("No catalog products found.")
 
     print(f"[2/4] Creating SQLite database: {db_path}", flush=True)
     db_path.parent.mkdir(parents=True, exist_ok=True)

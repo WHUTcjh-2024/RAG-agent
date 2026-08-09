@@ -5,13 +5,13 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from data_utils import SAMPLE_DIR, read_csv, resolve_image_path, write_json
+from data_utils import DEFAULT_CATALOG_DIR, read_csv, resolve_image_path, write_json
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inspect sampled H&M product data.")
+    parser = argparse.ArgumentParser(description="Inspect the normalized Tianchi catalog.")
     parser.add_argument(
-        "--input_csv", type=Path, default=SAMPLE_DIR / "articles_sample.csv"
+        "--input_csv", type=Path, default=DEFAULT_CATALOG_DIR / "articles_sample.csv"
     )
     parser.add_argument(
         "--image_root",
@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
         help="Defaults to the input CSV directory.",
     )
     parser.add_argument(
-        "--report_path", type=Path, default=SAMPLE_DIR / "inspection_report.json"
+        "--report_path", type=Path, default=DEFAULT_CATALOG_DIR / "inspection_report.json"
     )
     return parser.parse_args()
 

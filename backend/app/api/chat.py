@@ -27,6 +27,7 @@ from app.core.agent.workflow import (
     workflow_enabled,
 )
 from app.core.agent.wardrobe import WardrobePlanner
+from app.core.catalog_paths import get_image_index_dir, get_text_index_dir
 from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
@@ -62,9 +63,8 @@ def get_memory() -> AgentMemoryStore:
 
 @lru_cache(maxsize=1)
 def get_orchestrator() -> ShoppingAgentOrchestrator:
-    data_dir = Path(__file__).resolve().parents[2] / "data" / "vector_store"
-    text_index = Path(os.getenv("TEXT_INDEX_DIR", str(data_dir / "text")))
-    image_index = Path(os.getenv("IMAGE_INDEX_DIR", str(data_dir / "image")))
+    text_index = get_text_index_dir()
+    image_index = get_image_index_dir()
     device = os.getenv("IMAGE_DEVICE", "auto")
     text_retriever = TextRetriever(text_index)
     required_image_files = ("metadata.json", "embeddings.npy", "products.jsonl")

@@ -19,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.text_encoder import DEFAULT_MODEL, create_text_encoder
 from app.core.retrieval.bm25 import BM25Index
+from data_utils import DEFAULT_CATALOG_DIR, resolve_catalog_csv
 
 
 PROFILE_FIELDS = (
@@ -40,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input_csv",
         type=Path,
-        default=BACKEND_DIR / "data" / "sample" / "articles_sample.csv",
+        default=DEFAULT_CATALOG_DIR / "articles_sample.csv",
     )
     parser.add_argument(
         "--index_dir",
@@ -139,7 +140,7 @@ def main() -> int:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch_size must be greater than zero.")
-    input_csv = args.input_csv.resolve()
+    input_csv = resolve_catalog_csv(args.input_csv)
     index_dir = args.index_dir.resolve()
 
     print(f"[1/4] Reading products: {input_csv}", flush=True)

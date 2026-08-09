@@ -7,7 +7,7 @@
 ## 范围
 
 - 仅调整后端镜像构建和 Docker Compose 运行配置。
-- 索引输入为现有 `backend/data/sample/articles_sample.csv` 与对应图片目录。
+- 索引输入为现有 `backend/data/tianchi-catalog/articles_sample.csv` 与对应图片目录。
 - 使用现有 `build_image_index.py`、`openai/clip-vit-base-patch32` 和 CPU 编码器。
 - 不修改 Python RAG 的接口、业务流程或天池原始数据。
 - 不提交商品图片、SQLite 数据库或生成的索引文件。

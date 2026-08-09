@@ -50,7 +50,7 @@ ARG BUILD_IMAGE_INDEX=0
 ```dockerfile
 RUN if [ "$BUILD_IMAGE_INDEX" = "1" ]; then \
       python scripts/build_image_index.py \
-        --input_csv data/sample/articles_sample.csv \
+        --input_csv data/tianchi-catalog/articles_sample.csv \
         --index_dir data/vector_store/image \
         --backend transformers-clip \
         --device cpu \

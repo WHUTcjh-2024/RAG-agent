@@ -8,7 +8,8 @@ from typing import Any, Iterable
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
-SAMPLE_DIR = BACKEND_DIR / "data" / "sample"
+DEFAULT_CATALOG_DIR = BACKEND_DIR / "data" / "tianchi-catalog"
+DEMO_CATALOG_DIR = BACKEND_DIR / "data" / "tianchi-demo"
 
 PRODUCT_FIELDS = (
     "article_id",
@@ -75,3 +76,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def resolve_catalog_csv(path: Path) -> Path:
+    """Use the local Tianchi catalog, with a tracked CI-safe demo fallback."""
+    resolved = path.expanduser().resolve()
+    default = (DEFAULT_CATALOG_DIR / "articles_sample.csv").resolve()
+    if resolved == default and not resolved.is_file():
+        demo = (DEMO_CATALOG_DIR / "articles_sample.csv").resolve()
+        if demo.is_file():
+            return demo
+    return resolved

@@ -6,14 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from app.core.catalog_fields import enrich_commerce_fields
-
-
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "sqlite" / "app.db"
+from app.core.catalog_paths import DEFAULT_SQLITE_PATH, get_catalog_dir
 
 
 def get_db_path() -> Path:
-    configured = os.getenv("SQLITE_PATH", "").strip()
-    return Path(configured).resolve() if configured else DEFAULT_DB_PATH.resolve()
+    configured = os.getenv("CATALOG_DB_PATH", "").strip() or os.getenv(
+        "SQLITE_PATH", ""
+    ).strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    catalog_db = get_catalog_dir() / "app.db"
+    return catalog_db.resolve() if catalog_db.is_file() else DEFAULT_SQLITE_PATH
 
 
 def connect() -> sqlite3.Connection:

@@ -1,6 +1,5 @@
 import logging
 import os
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -14,7 +13,13 @@ from app.api.commerce import router as commerce_router
 from app.api.products import router as products_router
 from app.api.search import router as search_router
 from app.core.agent.errors import AgentException, invalid_input
+from app.core.catalog_paths import (
+    get_catalog_image_dir,
+    get_image_index_dir,
+    get_text_index_dir,
+)
 from app.core.request_id import RequestIdMiddleware, create_request_id
+from app.db.database import get_db_path
 
 
 APP_LOG_LEVEL = getattr(
@@ -50,7 +55,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(commerce_router, prefix="/api")
 
-IMAGE_DIR = Path(__file__).resolve().parents[1] / "data" / "sample" / "images"
+IMAGE_DIR = get_catalog_image_dir()
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=IMAGE_DIR), name="media")
 
@@ -93,11 +98,10 @@ async def validation_exception_handler(
 
 @app.get("/health")
 def health() -> dict:
-    data_dir = Path(__file__).resolve().parents[1] / "data"
     checks = {
-        "catalog": (data_dir / "sqlite" / "app.db").is_file(),
-        "text_index": (data_dir / "vector_store" / "text" / "embeddings.npy").is_file(),
-        "image_index": (data_dir / "vector_store" / "image" / "embeddings.npy").is_file(),
+        "catalog": get_db_path().is_file(),
+        "text_index": (get_text_index_dir() / "embeddings.npy").is_file(),
+        "image_index": (get_image_index_dir() / "embeddings.npy").is_file(),
     }
     return {
         "status": "ready" if all(checks.values()) else "degraded",
