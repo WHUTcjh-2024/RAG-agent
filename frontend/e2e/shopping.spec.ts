@@ -125,8 +125,8 @@ test("browse, filter, paginate and inspect honest commerce fields", async ({ pag
   await expect(page.getByText("第 2 / 2 页")).toBeVisible();
   await page.getByRole("button", { name: "查看 White Tianchi Office Shirt 详情" }).click();
   await expect(page.getByText("商品详情")).toBeVisible();
-  await expect(page.getByText(/^299\.000000 CNY$/)).toBeVisible();
-  await expect(page.getByText("数据源未提供").first()).toBeVisible();
+  await expect(page.getByText("¥299")).toBeVisible();
+  await expect(page.getByText("暂未提供").first()).toBeVisible();
 });
 
 test("compare, add to Java cart and clear it", async ({ page }) => {
@@ -139,18 +139,18 @@ test("compare, add to Java cart and clear it", async ({ page }) => {
   await page.getByRole("button", { name: "开始对比" }).click();
   await expect(page.getByText("单品对比")).toBeVisible();
   await page.getByRole("button", { name: "关闭" }).click();
-  await page.getByLabel("加入购物袋").first().click();
-  await page.getByLabel("打开购物袋").click();
+  await page.getByLabel("加入购物车").first().click();
+  await page.getByLabel("打开购物车").click();
   await expect(page.getByText("White Tianchi Office Shirt").last()).toBeVisible();
-  await page.getByRole("button", { name: "清空购物袋" }).click();
-  await expect(page.getByText("购物袋还是空的")).toBeVisible();
+  await page.getByRole("button", { name: "清空购物车" }).click();
+  await expect(page.getByText("购物车还是空的")).toBeVisible();
 });
 
 test("restores persisted cart after reload", async ({ page }) => {
   await mockApi(page, [products[0]]);
   await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
   await page.goto("/");
-  await page.getByLabel("打开购物袋").click();
+  await page.getByLabel("打开购物车").click();
   await expect(page.getByText("White Tianchi Office Shirt").last()).toBeVisible();
 });
 
@@ -158,24 +158,24 @@ test("places an order from a nonempty authenticated cart", async ({ page }) => {
   await mockApi(page, [products[0]]);
   await page.addInitScript(() => localStorage.setItem("atelier-access-token", "e2e-token"));
   await page.goto("/");
-  await page.getByLabel("打开购物袋").click();
+  await page.getByLabel("打开购物车").click();
   const checkout = page.getByRole("button", { name: "提交订单" });
   await expect(checkout).toBeVisible();
   await checkout.click();
   await expect(page).toHaveURL(/\/orders$/);
 });
 
-test("shows authenticated order snapshots and cancels a pending payment order", async ({ page }) => {
+test("keeps order screens Chinese even when an old English preference exists", async ({ page }) => {
   await mockApi(page);
   await page.addInitScript(() => {
     localStorage.setItem("atelier-access-token", "e2e-token");
     localStorage.setItem("atelier-language", "en");
   });
   await page.goto("/orders");
-  await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的订单" })).toBeVisible();
   await expect(page.getByText("White Tianchi Office Shirt")).toBeVisible();
-  await page.getByRole("button", { name: "Cancel order" }).click();
-  await expect(page.getByText("Cancelled")).toBeVisible();
+  await page.getByRole("button", { name: "取消订单" }).click();
+  await expect(page.getByText("已取消")).toBeVisible();
 });
 
 test("uploads an image and renders streamed grounded recommendations", async ({ page }) => {
@@ -195,7 +195,7 @@ test("uploads an image and renders streamed grounded recommendations", async ({ 
     name: "reference.png", mimeType: "image/png",
     buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")
   });
-  await page.getByLabel("导购需求").fill("找白色通勤款");
+  await page.getByLabel("搜索需求").fill("找白色通勤款");
   await page.getByLabel("发送").click();
   await expect(page.getByText("已找到真实目录中的相似商品。")).toBeVisible();
 });
@@ -215,7 +215,7 @@ test("does not let delayed session recovery erase a live streamed answer", async
   }));
 
   await page.goto("/agent");
-  await page.getByLabel("导购需求").fill("立即推荐");
+  await page.getByLabel("搜索需求").fill("立即推荐");
   await page.getByLabel("发送").click();
   const answer = page.getByText("流式答案不会被旧会话覆盖。");
   await expect(answer).toBeVisible();
@@ -223,17 +223,18 @@ test("does not let delayed session recovery erase a live streamed answer", async
   await expect(answer).toBeVisible();
 });
 
-test("switches the complete interface to English and persists the choice", async ({ page }) => {
+test("locks the storefront to Chinese and ignores an old English preference", async ({ page }) => {
   await mockApi(page);
+  await page.addInitScript(() => localStorage.setItem("atelier-language", "en"));
   await page.goto("/");
-  await page.getByLabel("Language").click();
-  await page.getByRole("button", { name: "Discover" }).click();
-  await expect(page.getByPlaceholder("Search names or descriptions")).toBeVisible();
+  await expect(page.getByRole("button", { name: "商品", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "商品", exact: true }).click();
+  await expect(page.getByPlaceholder("搜索商品名称或描述")).toBeVisible();
+  await page.getByRole("button", { name: "首页" }).click();
   await expect(page.getByTestId("open-stylist")).toBeVisible();
   await page.reload();
-  await expect(page.getByPlaceholder("Search names or descriptions")).toBeVisible();
   await page.getByTestId("open-stylist").click();
-  await expect(page.getByText("What are you dressing for?")).toBeVisible();
+  await expect(page.getByText("想找什么商品？")).toBeVisible();
 });
 
 test("logs in before using the Java cart", async ({ page }) => {
@@ -247,7 +248,7 @@ test("logs in before using the Java cart", async ({ page }) => {
   await page.getByLabel("邮箱").fill("e2e@example.com");
   await page.getByLabel("密码").fill("password123");
   await page.locator("form").getByRole("button", { name: "登录" }).click();
-  await expect(page.getByRole("button", { name: "退出" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
 });
 
 test("renders backend-driven workflow events and grounded evidence", async ({ page }) => {
@@ -267,15 +268,15 @@ test("renders backend-driven workflow events and grounded evidence", async ({ pa
   }));
 
   await page.goto("/agent");
-  await page.getByLabel("导购需求").fill("找白色棉质通勤衬衫");
+  await page.getByLabel("搜索需求").fill("找白色棉质通勤衬衫");
   await page.getByLabel("发送").click();
-  await page.getByRole("button", { name: "执行" }).click();
-  await expect(page.getByText("2 verified sources")).toBeVisible();
-  await expect(page.getByText("12.5ms")).toBeVisible();
-  await page.getByRole("button", { name: "依据" }).click();
-  await expect(page.getByText("material")).toBeVisible();
-  await page.getByText("material").click();
-  await expect(page.getByText("Cotton")).toBeVisible();
+  await page.getByRole("button", { name: "进度" }).click();
+  await expect(page.getByText("正在验证推荐依据").first()).toBeVisible();
+  await expect(page.getByText("12.5 毫秒")).toBeVisible();
+  await page.getByRole("button", { name: "结果" }).click();
+  await expect(page.getByText("材质")).toBeVisible();
+  await page.getByText("材质").click();
+  await expect(page.getByText("棉", { exact: true })).toBeVisible();
   await expect(page.locator(".grounded-conclusion").getByText("白色衬衫符合通勤场景。")).toBeVisible();
 });
 
@@ -285,7 +286,7 @@ test("exposes an installable mobile application shell", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");
-  await expect(page.getByRole("navigation", { name: "主要导航" }).getByRole("button")).toHaveCount(5);
+  await expect(page.getByRole("navigation", { name: "主要导航" }).getByRole("button")).toHaveCount(4);
   await expect(page.getByTestId("open-stylist")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
@@ -305,11 +306,11 @@ test("keeps Agent evidence accessible on mobile and honors reduced motion", asyn
   }));
 
   await page.goto("/agent");
-  await page.getByLabel("导购需求").fill("白色通勤款");
+  await page.getByLabel("搜索需求").fill("白色通勤款");
   await page.getByLabel("发送").click();
-  await page.getByRole("button", { name: "依据" }).click();
+  await page.getByRole("button", { name: "结果" }).click();
   await expect(page.getByText("White Tianchi Office Shirt")).toBeVisible();
-  await expect(page.getByText("color")).toBeVisible();
+  await expect(page.getByText("颜色")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
 });

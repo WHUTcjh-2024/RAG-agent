@@ -4,23 +4,24 @@ import { productImage } from "../api/client";
 import { useTranslation } from "../i18n";
 import { motionTokens } from "../motion/tokens";
 import type { Product } from "../types";
+import { formatCatalogPrice } from "../utils/formatters";
 
 export function CompareWorkspace({ products, onClose, onRemove, onDetail }: { products: Product[]; onClose: () => void; onRemove: (id: string) => void; onDetail: (id: string) => void }) {
-  const { t } = useTranslation();
+  const { language, t } = useTranslation();
   const rows: [string, (product: Product) => string][] = [
     [t("category"), (product) => product.product_type_name || t("unavailable")],
     [t("color"), (product) => product.colour_group_name || t("unavailable")],
     [t("group"), (product) => product.garment_group_name || t("unavailable")],
     [t("inventory"), (product) => product.inventory_status === "unknown" || !product.inventory_status ? t("unavailable") : product.inventory_status],
     [t("sizes"), (product) => product.available_sizes?.length ? product.available_sizes.join(" / ") : t("unavailable")],
-    [t("datasetPrice"), (product) => product.price_info ? `${product.price_info.amount.toFixed(4)} ${product.price_info.currency}` : t("unavailable")]
+    [t("datasetPrice"), (product) => product.price_info ? formatCatalogPrice(product.price_info.amount, product.price_info.currency) : t("unavailable")]
   ];
 
   return (
     <div className="compare-page">
       <header className="workspace-heading">
         <button onClick={onClose} aria-label={t("close")}><ArrowLeft size={17} />{t("discover")}</button>
-        <div><p className="section-kicker">COMPARE WORKSPACE</p><h1>{t("compare")}</h1><p>{t("compareSubtitle")}</p></div>
+        <div><p className="section-kicker">{language === "zh" ? "对比工作台" : "COMPARE WORKSPACE"}</p><h1>{t("compare")}</h1><p>{t("compareSubtitle")}</p></div>
       </header>
       {products.length < 2 ? <div className="empty-workspace"><Minus size={30} /><p>{t("selected", { count: products.length })}</p><button onClick={onClose}>{t("discover")}</button></div> : (
         <motion.div className="compare-grid" layout>

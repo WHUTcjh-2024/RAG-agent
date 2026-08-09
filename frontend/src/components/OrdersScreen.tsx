@@ -1,6 +1,7 @@
 import { AlertCircle, LoaderCircle, PackageOpen, ReceiptText, XCircle } from "lucide-react";
 import { useTranslation } from "../i18n";
 import type { OrderDetail } from "../types";
+import { formatCatalogPrice } from "../utils/formatters";
 
 type OrdersScreenProps = {
   authenticated: boolean;
@@ -39,7 +40,7 @@ export function OrdersScreen({ authenticated, orders, loading, error, cancelling
   }
 
   return <main className="orders-screen app-screen">
-    <div className="orders-heading"><span>FITME ORDERS</span><h2>{t("orders")}</h2></div>
+    <div className="orders-heading"><span>订单记录</span><h2>{t("orders")}</h2></div>
     <section className="orders-list" aria-label={t("orders")}>
       {orders.map((order) => {
         const pending = order.status === "PENDING_PAYMENT";
@@ -52,11 +53,11 @@ export function OrdersScreen({ authenticated, orders, loading, error, cancelling
           <div className="order-items">
             {order.items.map((item) => <div className="order-item" key={item.id}>
               <img src={item.productImageUrl || ""} alt={item.productName} />
-              <div><h3>{item.productName}</h3><p>{item.unitPrice.toFixed(4)} x {item.quantity}</p></div>
-              <strong>{item.subtotal.toFixed(4)}</strong>
+              <div><h3>{item.productName}</h3><p>{formatCatalogPrice(item.unitPrice)} × {item.quantity}</p></div>
+              <strong>{formatCatalogPrice(item.subtotal)}</strong>
             </div>)}
           </div>
-          <footer><div><span>{t("orderTotal")}</span><strong>{order.totalAmount.toFixed(4)}</strong></div>
+          <footer><div><span>{t("orderTotal")}</span><strong>{formatCatalogPrice(order.totalAmount)}</strong></div>
             {pending && <button disabled={cancellingOrderId === order.id} onClick={() => onCancel(order.id)}>{cancellingOrderId === order.id ? t("cancellingOrder") : <><XCircle size={14} />{t("cancelOrder")}</>}</button>}
           </footer>
         </article>;

@@ -1,7 +1,7 @@
 {
-  "name": "FitMe 智能穿搭助手",
+  "name": "FitMe 时尚穿搭",
   "short_name": "FitMe",
-  "description": "AI Agent 主导的穿搭与衣橱助手",
+  "description": "发现适合你的时尚单品。",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
