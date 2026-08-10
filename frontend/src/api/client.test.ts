@@ -380,4 +380,15 @@ describe("cart APIs", () => {
     await expect(updateCartQuantity("token-123", "item/needs encoding", 2)).resolves.toEqual(item);
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("rejects non-integer quantities before calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(updateCartQuantity("token-123", "item-1", 0)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+    await expect(updateCartQuantity("token-123", "item-1", -1)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+    await expect(updateCartQuantity("token-123", "item-1", 1.5)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

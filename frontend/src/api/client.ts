@@ -340,6 +340,9 @@ export async function addCart(token: string, product: Product): Promise<CartItem
 }
 
 export async function updateCartQuantity(token: string, itemId: string, quantity: number): Promise<CartItem> {
+  if (!Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 1) {
+    throw new Error("购物袋商品数量必须为大于等于 1 的整数");
+  }
   const response = await ensureOk(await fetch(`/api/cart/items/${encodeURIComponent(itemId)}`, {
     method: "PATCH",
     headers: { ...authorized(token), "Content-Type": "application/json" },

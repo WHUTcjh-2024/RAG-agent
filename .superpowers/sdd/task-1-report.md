@@ -40,12 +40,17 @@ Attempted focused verification locally, but the environment blocked it before te
    - Failed during Vitest startup with:
      - `EPERM: operation not permitted, open 'D:\727push\.worktrees\docs-cart-quantity-controls\frontend\node_modules\.vite-temp\vite.config.ts.timestamp-1786326483345-cf991188c63f6.mjs'`
 
+3. `cmd /c "cd /d D:\727push\.worktrees\docs-cart-quantity-controls\frontend && npx vitest run src/api/client.test.ts"`
+   - Failed during Vitest startup with the same restriction:
+     - `EPERM: operation not permitted, open 'D:\727push\.worktrees\docs-cart-quantity-controls\frontend\node_modules\.vite-temp\vite.config.ts.timestamp-1786327058975-2dc4c408853268.mjs'`
+
 Per instruction, test verification is deferred to the controller, who will run the focused and full frontend suites with the required local permissions.
 
 ## Self-Review
 
 - The new API follows the same helper pattern as the other cart and order client calls.
 - The test covers the requested encoded path, auth header, PATCH method, JSON body, and response shape.
+- The new guard rejects `0`, `-1`, and `1.5` before fetch and uses the exact required error message.
 - The change is narrowly scoped to the frontend API layer and the matching client test.
 
 ## Concerns
