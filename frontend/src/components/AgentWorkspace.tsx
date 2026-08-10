@@ -43,8 +43,47 @@ const evidenceLabels: Record<string, string> = {
   material: "材质",
   color: "颜色",
   catalog: "商品目录",
+  BODY_PROFILE: "身体档案",
+  SKU_MEASUREMENT: "SKU 实测",
+  PRICE: "价格",
+  INVENTORY: "库存",
+  RETURN_POLICY: "退换规则",
+  chestCm: "胸围",
+  size: "尺码",
+  amount: "价格",
+  inStock: "库存",
+  summary: "退换规则",
   Cotton: "棉",
-  White: "白色"
+  White: "白色",
+  True: "有货",
+  False: "无货"
+};
+
+const sourceKindLabels: Record<string, string> = {
+  USER_DECLARED: "用户填写",
+  USER_CONFIRMED: "用户确认",
+  MERCHANT_FEED: "商家数据",
+  PARTNER_API: "合作方接口",
+  AFFILIATE_API: "联盟接口",
+  OCR_CANDIDATE: "OCR 待确认",
+  MODEL_INFERENCE: "模型推断",
+  UNKNOWN: "来源未验证"
+};
+
+const verdictLabels: Record<string, string> = {
+  RECOMMEND_BUY: "建议购买",
+  BUY_WITH_CAUTION: "谨慎购买",
+  NOT_RECOMMENDED: "不建议购买",
+  INSUFFICIENT_DATA: "信息不足"
+};
+
+const verificationLabels: Record<string, string> = {
+  PASSED: "全部校验通过",
+  BLOCKED: "缺少可信事实",
+  REJECTED: "不满足购买约束",
+  PASS: "通过",
+  FAIL: "未通过",
+  SKIPPED: "未校验"
 };
 
 function chineseEvidenceValue(value: string): string {
@@ -53,7 +92,13 @@ function chineseEvidenceValue(value: string): string {
 }
 
 function chineseSourceId(sourceId: string): string {
-  return `商品编号：${sourceId.replace(/^[A-Za-z_]+:/, "")}`;
+  return `来源编号：${sourceId.replace(/^[A-Za-z_]+:/, "")}`;
+}
+
+function factTime(value?: string): string {
+  if (!value) return "时间未提供";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未提供" : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 export function AgentWorkspace(props: Props) {
@@ -178,7 +223,7 @@ export function AgentWorkspace(props: Props) {
 
           {props.products.length > 0 && <div className="agent-candidates"><h3>{t("candidates")} <span>{props.products.length}</span></h3><div>{props.products.slice(0, 4).map((product, index) => <motion.button key={product.article_id} onClick={() => props.onDetail(product.article_id)} initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.06 }}><img src={productImage(product)} alt="" /><span>{product.prod_name}<small>{product.reason || `${product.product_type_name} · ${product.colour_group_name}`}</small></span></motion.button>)}</div></div>}
 
-          {(props.evidence.length > 0 || props.decision) && <div className="evidence-map"><h3><Link2 size={13} />{t("evidence")}</h3>{latestAssistantMessage && <div className="grounded-conclusion"><span>{language === "zh" ? "搜索说明" : "Search summary"}</span><p>{latestAssistantMessage.content}</p></div>}{props.evidence.map((item) => <details key={`${item.source_id}-${item.field}`}><summary>{language === "zh" ? (evidenceLabels[item.field] || "商品属性") : item.field}<span>{language === "zh" ? (evidenceLabels[item.source_type] || "商品目录") : item.source_type}</span></summary><p>{language === "zh" ? chineseEvidenceValue(item.value) : item.value}</p><small>{language === "zh" ? chineseSourceId(item.source_id) : item.source_id}</small></details>)}{props.decision && <motion.div className="decision-card" initial={{ clipPath: "inset(0 0 100% 0)" }} animate={{ clipPath: "inset(0 0 0% 0)" }}><span>{props.decision.verdict.replaceAll("_", " ")}</span><strong>{Math.round(props.decision.confidence * 100)}%</strong>{props.decision.reasons.map((reason) => <p key={reason}>{reason}</p>)}</motion.div>}</div>}
+          {(props.evidence.length > 0 || props.decision) && <div className="evidence-map"><h3><Link2 size={13} />{t("evidence")}</h3>{latestAssistantMessage && <div className="grounded-conclusion"><span>{language === "zh" ? "搜索说明" : "Search summary"}</span><p>{latestAssistantMessage.content}</p></div>}{props.decision?.fact_passport && <section className={`fact-passport is-${props.decision.fact_passport.status.toLowerCase()}`} aria-label={language === "zh" ? "商品事实护照" : "Product fact passport"}><div className="fact-passport-heading"><div><Database size={13} /><strong>{language === "zh" ? "商品事实护照" : "Fact passport"}</strong></div><span>{language === "zh" ? (props.decision.fact_passport.status === "VERIFIED" ? "事实齐全" : "事实待补充") : props.decision.fact_passport.status}</span></div><p>{language === "zh" ? `SKU ${props.decision.fact_passport.sku_id || "未提供"} · ${factTime(props.decision.fact_passport.observed_at)}` : `SKU ${props.decision.fact_passport.sku_id || "unavailable"} · ${props.decision.fact_passport.observed_at}`}</p>{props.decision.fact_passport.missing_fields.length > 0 && <small>{language === "zh" ? `待补充：${props.decision.fact_passport.missing_fields.join("、")}` : `Missing: ${props.decision.fact_passport.missing_fields.join(", ")}`}</small>}</section>}{props.evidence.map((item) => <details key={`${item.source_id}-${item.field}`}><summary>{language === "zh" ? (evidenceLabels[item.field] || "商品属性") : item.field}<span>{language === "zh" ? (item.source_label || sourceKindLabels[item.source_kind || "UNKNOWN"] || evidenceLabels[item.source_type] || "商品目录") : (item.source_label || item.source_type)}</span></summary><p>{language === "zh" ? chineseEvidenceValue(item.value) : item.value}</p><small>{language === "zh" ? `${chineseSourceId(item.source_id)} · ${item.verified ? "已核验" : "待核验"} · 置信度 ${Math.round((item.confidence || 0) * 100)}% · ${factTime(item.observed_at)}` : `${item.source_id} · ${item.verified ? "verified" : "unverified"}`}</small></details>)}{props.decision && <motion.div className="decision-card" initial={{ clipPath: "inset(0 0 100% 0)" }} animate={{ clipPath: "inset(0 0 0% 0)" }}><span>{language === "zh" ? verdictLabels[props.decision.verdict] : props.decision.verdict.replaceAll("_", " ")}</span><strong>{Math.round(props.decision.confidence * 100)}%</strong>{props.decision.recommended_size && <em>{language === "zh" ? `建议尺码 ${props.decision.recommended_size}` : `Size ${props.decision.recommended_size}`}</em>}{props.decision.reasons.map((reason) => <p key={reason}>{reason}</p>)}{props.decision.verification && <div className={`verification-summary is-${props.decision.verification.status.toLowerCase()}`}><h4><ShieldCheck size={12} />{language === "zh" ? verificationLabels[props.decision.verification.status] : props.decision.verification.status}</h4>{props.decision.verification.checks.map((check) => <div key={check.code}><span>{language === "zh" ? verificationLabels[check.status] : check.status}</span><p><strong>{check.label}</strong>{check.message}</p></div>)}</div>}{props.decision.missing_fields.length > 0 && <small className="decision-missing">{language === "zh" ? `无法确认：${props.decision.missing_fields.join("、")}` : `Missing: ${props.decision.missing_fields.join(", ")}`}</small>}</motion.div>}</div>}
 
           {props.pendingAction && <motion.div className="confirm-card" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}><span>{t("waiting")}</span><p>{props.pendingAction.summary}</p><button onClick={props.onConfirm}>{t("confirmAdd")}</button></motion.div>}
 

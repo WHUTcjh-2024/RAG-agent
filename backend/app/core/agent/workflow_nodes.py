@@ -342,6 +342,8 @@ class ShoppingAgentWorkflowNodes:
             card = self.orchestrator.decision_card_builder.build(
                 facts=facts,
                 alternatives=alternatives,
+                budget=state.get("hard_constraints", {}).get("budget"),
+                product_id=product_id,
             )
             decision = card.model_dump(mode="json")
             evidence = decision["evidence"]

@@ -63,7 +63,10 @@ class DecisionFactsIntegrationTest {
             .jsonPath("$.sku_measurements.chest_cm").isEqualTo(104)
             .jsonPath("$.price.amount").isEqualTo(299)
             .jsonPath("$.inventory.in_stock").isEqualTo(true)
-            .jsonPath("$.version").isEqualTo("facts-v1");
+            .jsonPath("$.version").isEqualTo("facts-v1")
+            .jsonPath("$.provenance['bodyProfile.chestCm'].source_kind").isEqualTo("USER_DECLARED")
+            .jsonPath("$.provenance['price.amount'].source_kind").isEqualTo("MERCHANT_FEED")
+            .jsonPath("$.provenance['price.amount'].verified").isEqualTo(true);
     }
 
     @Test
