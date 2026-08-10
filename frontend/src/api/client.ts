@@ -339,6 +339,15 @@ export async function addCart(token: string, product: Product): Promise<CartItem
   return response.json();
 }
 
+export async function updateCartQuantity(token: string, itemId: string, quantity: number): Promise<CartItem> {
+  const response = await ensureOk(await fetch(`/api/cart/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ quantity })
+  }));
+  return response.json();
+}
+
 export async function confirmAgentCartAction(token: string, action: PendingCartAction): Promise<CartItem> {
   const response = await ensureOk(await fetch("/api/cart/agent-actions/confirm", {
     method: "POST",
