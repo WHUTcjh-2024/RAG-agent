@@ -40,7 +40,7 @@ export function OrdersScreen({ authenticated, orders, loading, error, cancelling
   }
 
   return <main className="orders-screen app-screen">
-    <div className="orders-heading"><span>订单记录</span><h2>{t("orders")}</h2></div>
+    <div className="orders-heading"><span>订单记录</span><h2>订单详情</h2></div>
     <section className="orders-list" aria-label={t("orders")}>
       {orders.map((order) => {
         const pending = order.status === "PENDING_PAYMENT";
