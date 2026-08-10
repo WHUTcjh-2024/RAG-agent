@@ -172,7 +172,7 @@ test("keeps order screens Chinese even when an old English preference exists", a
     localStorage.setItem("atelier-language", "en");
   });
   await page.goto("/orders");
-  await expect(page.getByRole("heading", { name: "我的订单" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的订单", level: 1 })).toBeVisible();
   await expect(page.getByText("White Tianchi Office Shirt")).toBeVisible();
   await page.getByRole("button", { name: "取消订单" }).click();
   await expect(page.getByText("已取消")).toBeVisible();
