@@ -12,13 +12,11 @@ try {
     }
 
     $deadline = (Get-Date).AddMinutes(3)
-    $health = $null
+    $frontendReady = $false
     do {
         try {
-            $health = Invoke-RestMethod -Uri "http://127.0.0.1:18000/health" -TimeoutSec 5
-            $javaReady = (Invoke-WebRequest -Uri "http://127.0.0.1:8080/actuator/health" -TimeoutSec 5).StatusCode -eq 200
             $frontendReady = (Invoke-WebRequest -Uri "http://127.0.0.1:5173/" -TimeoutSec 5).StatusCode -eq 200
-            if ($health.status -in @("ready", "degraded") -and $javaReady -and $frontendReady) {
+            if ($frontendReady) {
                 break
             }
         }
@@ -27,7 +25,7 @@ try {
         }
     } while ((Get-Date) -lt $deadline)
 
-    if ($null -eq $health -or $health.status -notin @("ready", "degraded") -or -not $javaReady -or -not $frontendReady) {
+    if (-not $frontendReady) {
         throw "Full stack did not become ready within three minutes."
     }
 

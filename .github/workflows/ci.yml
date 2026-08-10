@@ -69,9 +69,8 @@ jobs:
       - name: Wait for the full stack
         run: |
           for attempt in $(seq 1 90); do
-            if curl --fail --silent http://127.0.0.1:18000/health >/dev/null \
-              && curl --fail --silent http://127.0.0.1:8080/actuator/health >/dev/null \
-              && curl --fail --silent http://127.0.0.1:5173/ >/dev/null; then
+            # Python 和 Java 仅在 Docker 内部网络可见；前端是唯一对外入口。
+            if curl --fail --silent http://127.0.0.1:5173/ >/dev/null; then
               exit 0
             fi
             sleep 2
