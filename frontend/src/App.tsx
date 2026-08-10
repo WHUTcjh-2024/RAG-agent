@@ -348,26 +348,26 @@ export default function App() {
   const loadingPage = <div className="page-loading"><span />{t("loading")}</div>;
   const appProducts = editorialProducts.length ? editorialProducts : catalogProducts;
   const pageContent = pathname === "/" ? (
-    <HomeScreen products={appProducts} agentState={agentState} events={agentEvents} wardrobe={store.wardrobe} onAgent={() => transitionNavigate("/agent")} onWardrobe={() => transitionNavigate("/wardrobe")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
+    <HomeScreen products={appProducts} onAgent={() => transitionNavigate("/agent")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
   ) : pathname === "/wardrobe" ? (
     <WardrobeScreen user={store.user} wardrobe={store.wardrobe} inspiration={[...appProducts, ...catalogProducts]} onLogin={() => setAuthOpen(true)} onDetail={showDetail} />
   ) : pathname === "/discover" ? (
     collection
   ) : pathname === "/profile" ? (
-    <ProfileScreen user={store.user} cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)} wardrobeCount={store.wardrobe?.items.length || 0} compareCount={store.compareIds.length} onAuth={() => setAuthOpen(true)} onLogout={logout} onOrders={() => transitionNavigate("/orders")} />
+    <ProfileScreen user={store.user} cartCount={store.cart.reduce((count, item) => count + item.quantity, 0)} compareCount={store.compareIds.length} onAuth={() => setAuthOpen(true)} onLogout={logout} onOrders={() => transitionNavigate("/orders")} />
   ) : pathname === "/orders" ? (
     <OrdersScreen authenticated={Boolean(store.user)} orders={orders} loading={ordersLoading} error={ordersError} cancellingOrderId={cancellingOrderId} onLogin={() => setAuthOpen(true)} onDiscover={() => transitionNavigate("/discover")} onCancel={cancelExistingOrder} />
   ) : pathname.startsWith("/product/") ? (
-    <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} onAskAgent={(message) => { lastAgentRequest.current = { message, image: null, preview: null }; transitionNavigate("/agent"); window.setTimeout(() => submitAgent(message, null, null), 420); }} /> : loadingPage}</Suspense>
+    <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} /> : loadingPage}</Suspense>
   ) : pathname === "/compare" ? (
     <Suspense fallback={loadingPage}><CompareWorkspace products={store.comparison.length ? store.comparison : catalogProducts.filter((product) => store.compareIds.includes(product.article_id))} onClose={() => transitionNavigate("/discover")} onRemove={store.toggleCompare} onDetail={showDetail} /></Suspense>
   ) : pathname === "/agent" ? (
     <Suspense fallback={loadingPage}><AgentWorkspace messages={store.messages} streaming={store.streaming} state={agentState} events={agentEvents} slots={store.slots} traces={store.traces} products={agentProducts} evidence={agentEvidence} decision={store.decision} pendingAction={store.pendingAction} wardrobe={store.wardrobe} wardrobePlan={store.wardrobePlan} error={agentError} onClose={() => transitionNavigate("/")} onSubmit={submitAgent} onCancel={cancelAgent} onRetry={retryAgent} onConfirm={confirmPendingAction} onPlanAccept={acceptWardrobePlan} onPlanEdit={editWardrobePlan} onDetail={showDetail} /></Suspense>
   ) : (
-    <HomeScreen products={appProducts} agentState={agentState} events={agentEvents} wardrobe={store.wardrobe} onAgent={() => transitionNavigate("/agent")} onWardrobe={() => transitionNavigate("/wardrobe")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
+    <HomeScreen products={appProducts} onAgent={() => transitionNavigate("/agent")} onDiscover={() => transitionNavigate("/discover")} onDetail={showDetail} />
   );
 
-  const rootScreen = ["/", "/wardrobe", "/agent", "/discover", "/profile", "/orders"].includes(pathname);
+  const rootScreen = ["/", "/wardrobe", "/discover", "/profile", "/orders"].includes(pathname);
   const cartCount = store.cart.reduce((count, item) => count + item.quantity, 0);
 
   return (
@@ -378,7 +378,7 @@ export default function App() {
           <PageTransition key={pathname}>{pageContent}</PageTransition>
         </AnimatePresence>
 
-        {rootScreen && <BottomNavigation pathname={pathname} onNavigate={transitionNavigate} />}
+        {rootScreen && <BottomNavigation pathname={pathname} onNavigate={transitionNavigate} onCart={() => setCartOpen(true)} />}
 
         <AnimatePresence>
           {store.compareIds.length >= 2 && !pathname.startsWith("/compare") && (

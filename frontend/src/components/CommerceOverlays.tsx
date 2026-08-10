@@ -4,16 +4,17 @@ import { ArrowRight, Check, Minus, Plus, ShoppingBag, UserRound, Wifi, WifiOff, 
 import { useTranslation } from "../i18n";
 import { motionTokens } from "../motion/tokens";
 import type { CartItem } from "../types";
+import { formatCatalogPrice } from "../utils/formatters";
 
 function SpatialShell({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
-  const { t } = useTranslation();
+  const { language, t } = useTranslation();
   return (
     <AnimatePresence>
       {open && (
         <motion.div className="overlay-root" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <motion.button className="overlay-scrim" onClick={onClose} aria-label={t("close")} initial={{ backdropFilter: "blur(0px)" }} animate={{ backdropFilter: "blur(8px)" }} />
           <motion.aside className="spatial-drawer" initial={{ x: "104%", rotateY: -3 }} animate={{ x: 0, rotateY: 0 }} exit={{ x: "104%", rotateY: -3 }} transition={motionTokens.spring.drawer}>
-            <header><div><span>PRIVATE SERVICE</span><h2>{title}</h2></div><button onClick={onClose} aria-label={t("close")}><X size={18} /></button></header>
+            <header><div><span>{language === "zh" ? "购物服务" : "SHOPPING SERVICE"}</span><h2>{title}</h2></div><button onClick={onClose} aria-label={t("close")}><X size={18} /></button></header>
             <div className="drawer-content">{children}</div>
           </motion.aside>
         </motion.div>
@@ -37,7 +38,7 @@ type CartProps = {
 };
 
 export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemove, onChangeQuantity, onClear, onCheckout, checkoutBusy, updatingItemId }: CartProps) {
-  const { t } = useTranslation();
+  const { language, t } = useTranslation();
   const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const cartBusy = checkoutBusy || updatingItemId !== null;
   return (
@@ -57,7 +58,7 @@ export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemo
                     <img src={item.productImageUrl || ""} alt={item.productName} />
                     <div>
                       <h3>{item.productName}</h3>
-                      <p>{item.unitPrice.toFixed(4)} · × {item.quantity}</p>
+                      <p>{formatCatalogPrice(item.unitPrice)} · {language === "zh" ? `数量 ${item.quantity}` : `× ${item.quantity}`}</p>
                       <div className="cart-item-actions">
                         <div className="quantity-stepper" aria-label={t("cart")}>
                           <button type="button" aria-label={t("decreaseQuantity")} disabled={busy || item.quantity <= 1} onClick={() => void onChangeQuantity(item.id, item.quantity - 1)}>
@@ -78,7 +79,7 @@ export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemo
               })}
             </AnimatePresence>
           </div>
-          <footer className="cart-footer"><div><span>Total</span><strong>{total.toFixed(4)}</strong></div><button type="button" disabled={cartBusy} onClick={() => void onCheckout()}>{checkoutBusy ? t("submittingOrder") : t("submitOrder")}</button><button type="button" disabled={cartBusy} onClick={onClear}>{t("clearCart")}</button></footer>
+          <footer className="cart-footer"><div><span>{t("orderTotal")}</span><strong>{formatCatalogPrice(total)}</strong></div><button type="button" disabled={cartBusy} onClick={() => void onCheckout()}>{checkoutBusy ? t("submittingOrder") : t("submitOrder")}</button><button type="button" disabled={cartBusy} onClick={onClear}>{t("clearCart")}</button></footer>
         </div>
       )}
     </SpatialShell>
@@ -92,7 +93,7 @@ type AuthProps = {
 };
 
 export function AuthOverlay({ open, onClose, onSubmit }: AuthProps) {
-  const { t } = useTranslation();
+  const { language, t } = useTranslation();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -115,7 +116,7 @@ export function AuthOverlay({ open, onClose, onSubmit }: AuthProps) {
           <button className="overlay-scrim" onClick={onClose} aria-label={t("close")} />
           <motion.section className="auth-card" initial={{ opacity: 0, scale: 0.94, y: 28 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 18 }} transition={motionTokens.spring.drawer}>
             <button className="auth-close" onClick={onClose} aria-label={t("close")}><X size={18} /></button>
-            <span>FITME ACCOUNT</span><h2>{mode === "login" ? t("login") : t("register")}</h2>
+            <span>{language === "zh" ? "FitMe 账户服务" : "FITME ACCOUNT"}</span><h2>{mode === "login" ? t("login") : t("register")}</h2>
             <AnimatePresence mode="wait">
               <motion.form key={mode} onSubmit={submit} initial={{ opacity: 0, x: mode === "login" ? -14 : 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: mode === "login" ? 14 : -14 }}>
                 {mode === "register" && <label><span>{t("displayName")}</span><input name="displayName" aria-label={t("displayName")} required minLength={2} /></label>}

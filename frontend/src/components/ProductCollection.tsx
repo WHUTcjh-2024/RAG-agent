@@ -4,6 +4,7 @@ import { Filter, Search, SlidersHorizontal, X } from "lucide-react";
 import { useTranslation } from "../i18n";
 import { motionTokens } from "../motion/tokens";
 import type { Product, ProductFacets, ProductQuery } from "../types";
+import { formatCatalogPrice } from "../utils/formatters";
 import { ProductCard } from "./ProductCard";
 
 function AnimatedNumber({ value }: { value: number }) {
@@ -21,7 +22,7 @@ const constraintsFor = (query: ProductQuery) => [
   query.category && ["category", query.category],
   query.color && ["color", query.color],
   query.indexGroup && ["indexGroup", query.indexGroup],
-  typeof query.maxPrice === "number" && ["maxPrice", `≤ ${query.maxPrice}`]
+  typeof query.maxPrice === "number" && ["maxPrice", `不高于 ${formatCatalogPrice(query.maxPrice)}`]
 ].filter(Boolean) as [keyof ProductQuery, string][];
 
 type Props = {
@@ -57,7 +58,7 @@ export function ProductCollection(props: Props) {
   return (
     <section id="collection" className="collection-section">
       <header className="collection-header">
-        <div><p className="section-kicker">{t("collection")}</p><h2>{t("essentials")}</h2></div>
+        <div><p className="section-kicker">FitMe 精选</p><h2>{t("essentials")}</h2></div>
         <p className="result-count"><AnimatedNumber value={props.total} /> {t("items")}</p>
       </header>
 
@@ -81,7 +82,7 @@ export function ProductCollection(props: Props) {
             )}
           </AnimatePresence>
         </motion.div>
-        <button className="filter-toggle" onClick={() => setFilterOpen((value) => !value)}><SlidersHorizontal size={16} />{t("sort")}/{t("category")}</button>
+        <button className="filter-toggle" onClick={() => setFilterOpen((value) => !value)}><SlidersHorizontal size={16} />筛选和排序</button>
       </div>
 
       <AnimatePresence initial={false}>
@@ -118,7 +119,6 @@ export function ProductCollection(props: Props) {
                   key={product.article_id}
                   product={product}
                   index={index}
-                  featured={index === 0 || index === 7}
                   selected={props.compareIds.includes(product.article_id)}
                   onCompare={props.onCompare}
                   onAdd={props.onAdd}
@@ -136,7 +136,7 @@ export function ProductCollection(props: Props) {
       </div>
 
       {props.total > (props.query.pageSize || 12) && (
-        <nav className="pagination" aria-label="Pagination">
+        <nav className="pagination" aria-label="商品分页">
           <button disabled={(props.query.page || 1) <= 1} onClick={() => props.onChange({ page: (props.query.page || 1) - 1 })}>{t("previous")}</button>
           <span>{t("page", { current: props.query.page || 1, total: Math.ceil(props.total / (props.query.pageSize || 12)) })}</span>
           <button disabled={(props.query.page || 1) >= Math.ceil(props.total / (props.query.pageSize || 12))} onClick={() => props.onChange({ page: (props.query.page || 1) + 1 })}>{t("next")}</button>

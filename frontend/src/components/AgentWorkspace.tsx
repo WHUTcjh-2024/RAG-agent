@@ -39,6 +39,23 @@ const icons: Record<string, React.ReactNode> = {
   tool: <Wrench size={14} />, comparison: <GitCompareArrows size={14} />, verification: <ShieldCheck size={14} />, generation: <LoaderCircle size={14} />
 };
 
+const evidenceLabels: Record<string, string> = {
+  material: "材质",
+  color: "颜色",
+  catalog: "商品目录",
+  Cotton: "棉",
+  White: "白色"
+};
+
+function chineseEvidenceValue(value: string): string {
+  if (evidenceLabels[value]) return evidenceLabels[value];
+  return /[A-Za-z]/.test(value) ? "已匹配" : value;
+}
+
+function chineseSourceId(sourceId: string): string {
+  return `商品编号：${sourceId.replace(/^[A-Za-z_]+:/, "")}`;
+}
+
 export function AgentWorkspace(props: Props) {
   const { language, t } = useTranslation();
   const [value, setValue] = useState("");
@@ -83,15 +100,15 @@ export function AgentWorkspace(props: Props) {
     <div className="agent-page">
       <header className="agent-header">
         <button onClick={props.onClose} aria-label={t("close")}><ArrowLeft size={18} /></button>
-        <div><span className="agent-avatar"><Sparkles size={14} /></span><span>{language === "zh" ? "在线" : "ONLINE"}</span><h1>FitMe Agent</h1></div>
+        <div><span className="agent-avatar"><Sparkles size={14} /></span><span>{language === "zh" ? "商品搜索" : "PRODUCT SEARCH"}</span><h1>{language === "zh" ? "图片找同款" : "Image search"}</h1></div>
         <div className={`agent-live-state state-${props.state}`}><i />{props.state === "idle" ? t("waiting") : labels[props.state]}</div>
       </header>
 
-      <nav className="agent-mobile-tabs" aria-label={language === "zh" ? "Agent 工作区面板" : "Agent workspace panels"}>
+      <nav className="agent-mobile-tabs" aria-label={language === "zh" ? "商品搜索" : "Product search panels"}>
         {([
-          ["execution", <Wrench size={13} />, language === "zh" ? "执行" : "Execution"],
-          ["dialogue", <Sparkles size={13} />, language === "zh" ? "对话" : "Dialogue"],
-          ["evidence", <Link2 size={13} />, language === "zh" ? "依据" : "Evidence"]
+          ["execution", <Wrench size={13} />, language === "zh" ? "进度" : "Progress"],
+          ["dialogue", <Sparkles size={13} />, language === "zh" ? "搜索" : "Search"],
+          ["evidence", <Link2 size={13} />, language === "zh" ? "结果" : "Results"]
         ] as const).map(([pane, icon, label]) => (
           <button key={pane} aria-current={mobilePane === pane ? "page" : undefined} onClick={() => setMobilePane(pane)}>
             {icon}{label}
@@ -111,7 +128,7 @@ export function AgentWorkspace(props: Props) {
               return (
                 <motion.div layout key={phase} className={active ? "phase-step is-active" : complete ? "phase-step is-complete" : "phase-step"}>
                   <span>{complete ? <Check size={13} /> : icons[phase]}</span>
-                  <div><strong>{labels[phase]}</strong>{event?.summary && <small>{event.summary}</small>}{event?.durationMs !== undefined && <small>{event.durationMs.toFixed(1)}ms</small>}</div>
+                  <div><strong>{labels[phase]}</strong>{event?.durationMs !== undefined && <small>{event.durationMs.toFixed(1)} 毫秒</small>}</div>
                   {active && <motion.i layoutId="active-phase" />}
                 </motion.div>
               );
@@ -122,17 +139,17 @@ export function AgentWorkspace(props: Props) {
             {props.state === "retrying" && <motion.div className="special-agent-state" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><RotateCcw size={14} />{labels.retrying}</motion.div>}
             {props.state === "cancelled" && <motion.div className="special-agent-state" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><Square size={13} />{labels.cancelled}</motion.div>}
           </AnimatePresence>
-          {props.traces.length > 0 && <div className="tool-traces"><span>{t("execution")} / Tools</span>{props.traces.map((trace, index) => <motion.div key={`${trace.tool}-${index}`} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}><Wrench size={12} /><p><strong>{trace.tool}</strong>{trace.summary}</p></motion.div>)}</div>}
+          {props.traces.length > 0 && <div className="tool-traces"><span>{language === "zh" ? "搜索过程" : `${t("execution")} / Tools`}</span>{props.traces.map((trace, index) => <motion.div key={`${trace.tool}-${index}`} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}><Wrench size={12} /><p><strong>{language === "zh" ? "商品搜索" : trace.tool}</strong>{language === "zh" ? "已完成" : trace.summary}</p></motion.div>)}</div>}
         </aside>
 
         <section className="agent-conversation">
-          <div className="conversation-heading"><div><span>02 / DIALOGUE</span><h2>{t("dressingFor")}</h2></div>{props.streaming && <button onClick={props.onCancel}><Square size={12} />{t("stop")}</button>}</div>
+          <div className="conversation-heading"><div><span>{language === "zh" ? "商品搜索" : "PRODUCT SEARCH"}</span><h2>{t("dressingFor")}</h2></div>{props.streaming && <button onClick={props.onCancel}><Square size={12} />{t("stop")}</button>}</div>
           <div className="message-stream">
             {props.messages.length === 0 ? <div className="prompt-intro"><p>{t("chatHelp")}</p>{prompts.map((prompt, index) => <button key={prompt} onClick={() => setValue(prompt)}><span>0{index + 1}</span>{prompt}<ArrowRight size={14} /></button>)}</div> : (
               <AnimatePresence initial={false}>
                 {props.messages.map((message) => (
                   <motion.article key={message.id} className={`agent-message ${message.role}`} initial={{ opacity: 0, y: 16, filter: "blur(5px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}>
-                    <span>{message.role === "user" ? "YOU" : "ATELIER"}</span>
+                    <span>{message.role === "user" ? (language === "zh" ? "我" : "YOU") : (language === "zh" ? "商品助手" : "SHOPPING ASSISTANT")}</span>
                     <div data-testid={message.role === "assistant" ? "assistant-message" : undefined}>
                       {message.imagePreview && <img src={message.imagePreview} alt={t("uploadAlt")} />}
                       <p>{message.content}</p>
@@ -161,13 +178,13 @@ export function AgentWorkspace(props: Props) {
 
           {props.products.length > 0 && <div className="agent-candidates"><h3>{t("candidates")} <span>{props.products.length}</span></h3><div>{props.products.slice(0, 4).map((product, index) => <motion.button key={product.article_id} onClick={() => props.onDetail(product.article_id)} initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.06 }}><img src={productImage(product)} alt="" /><span>{product.prod_name}<small>{product.reason || `${product.product_type_name} · ${product.colour_group_name}`}</small></span></motion.button>)}</div></div>}
 
-          {(props.evidence.length > 0 || props.decision) && <div className="evidence-map"><h3><Link2 size={13} />{t("evidence")}</h3>{latestAssistantMessage && <div className="grounded-conclusion"><span>{language === "zh" ? "关联结论" : "Linked conclusion"}</span><p>{latestAssistantMessage.content}</p></div>}{props.evidence.map((item) => <details key={`${item.source_id}-${item.field}`}><summary>{item.field}<span>{item.source_type}</span></summary><p>{item.value}</p><small>{item.source_id}</small></details>)}{props.decision && <motion.div className="decision-card" initial={{ clipPath: "inset(0 0 100% 0)" }} animate={{ clipPath: "inset(0 0 0% 0)" }}><span>{props.decision.verdict.replaceAll("_", " ")}</span><strong>{Math.round(props.decision.confidence * 100)}%</strong>{props.decision.reasons.map((reason) => <p key={reason}>{reason}</p>)}</motion.div>}</div>}
+          {(props.evidence.length > 0 || props.decision) && <div className="evidence-map"><h3><Link2 size={13} />{t("evidence")}</h3>{latestAssistantMessage && <div className="grounded-conclusion"><span>{language === "zh" ? "搜索说明" : "Search summary"}</span><p>{latestAssistantMessage.content}</p></div>}{props.evidence.map((item) => <details key={`${item.source_id}-${item.field}`}><summary>{language === "zh" ? (evidenceLabels[item.field] || "商品属性") : item.field}<span>{language === "zh" ? (evidenceLabels[item.source_type] || "商品目录") : item.source_type}</span></summary><p>{language === "zh" ? chineseEvidenceValue(item.value) : item.value}</p><small>{language === "zh" ? chineseSourceId(item.source_id) : item.source_id}</small></details>)}{props.decision && <motion.div className="decision-card" initial={{ clipPath: "inset(0 0 100% 0)" }} animate={{ clipPath: "inset(0 0 0% 0)" }}><span>{props.decision.verdict.replaceAll("_", " ")}</span><strong>{Math.round(props.decision.confidence * 100)}%</strong>{props.decision.reasons.map((reason) => <p key={reason}>{reason}</p>)}</motion.div>}</div>}
 
           {props.pendingAction && <motion.div className="confirm-card" initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}><span>{t("waiting")}</span><p>{props.pendingAction.summary}</p><button onClick={props.onConfirm}>{t("confirmAdd")}</button></motion.div>}
 
-          {props.wardrobePlan && <div className="wardrobe-plan"><h3>{t("wardrobe")} <small>v{props.wardrobePlan.wardrobe_version}</small></h3><p>{props.wardrobe?.items.length || 0} existing · {props.wardrobePlan.new_item_total} new</p>{props.wardrobePlan.outfits.map((outfit) => <div key={outfit.outfit_id}><strong>{outfit.name}</strong>{outfit.items.map((item) => <span key={item.item_id}>{item.name}<button disabled={item.locked} onClick={() => props.onPlanEdit({ action: "LOCK", outfit_id: outfit.outfit_id, item_id: item.item_id })}>{item.locked ? "✓" : "○"}</button></span>)}</div>)}<button onClick={props.onPlanAccept}>{t("adoptPlan")}</button></div>}
+          {props.wardrobePlan && <div className="wardrobe-plan"><h3>{t("wardrobe")} <small>v{props.wardrobePlan.wardrobe_version}</small></h3><p>{language === "zh" ? `${props.wardrobe?.items.length || 0} 件已收录 · ${props.wardrobePlan.new_item_total} 件待加入` : `${props.wardrobe?.items.length || 0} existing · ${props.wardrobePlan.new_item_total} new`}</p>{props.wardrobePlan.outfits.map((outfit) => <div key={outfit.outfit_id}><strong>{outfit.name}</strong>{outfit.items.map((item) => <span key={item.item_id}>{item.name}<button disabled={item.locked} onClick={() => props.onPlanEdit({ action: "LOCK", outfit_id: outfit.outfit_id, item_id: item.item_id })}>{item.locked ? "✓" : "○"}</button></span>)}</div>)}<button onClick={props.onPlanAccept}>{t("adoptPlan")}</button></div>}
 
-          {startedNodes.length > 0 && <p className="event-integrity"><ShieldCheck size={12} /> {startedNodes.length} verified workflow events</p>}
+          {startedNodes.length > 0 && <p className="event-integrity"><ShieldCheck size={12} /> {language === "zh" ? `${startedNodes.length} 条已验证工作流事件` : `${startedNodes.length} verified workflow events`}</p>}
         </aside>
       </div>
     </div>
