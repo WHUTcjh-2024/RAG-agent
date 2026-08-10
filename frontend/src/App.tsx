@@ -26,6 +26,7 @@ import {
   register,
   removeCart,
   replanWardrobe,
+  updateCartQuantity,
   streamChat
 } from "./api/client";
 import { CartDrawer, AuthOverlay, CartFlight, NetworkNotice, type Flight } from "./components/CommerceOverlays";
@@ -56,6 +57,7 @@ export default function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [updatingCartItemId, setUpdatingCartItemId] = useState<string | null>(null);
   const [orders, setOrders] = useState<OrderDetail[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState("");
@@ -282,8 +284,20 @@ export default function App() {
   };
 
   const logout = () => { store.setAuth("", null); setCartOpen(false); setNotice(t("loggedOut")); };
+  const changeCartQuantity = async (itemId: string, quantity: number) => {
+    if (!store.accessToken || updatingCartItemId) return;
+    setUpdatingCartItemId(itemId);
+    try {
+      await updateCartQuantity(store.accessToken, itemId, quantity);
+      store.setCart(await fetchCart(store.accessToken));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t("quantityUpdateFailed"));
+    } finally {
+      setUpdatingCartItemId(null);
+    }
+  };
   const emptyCart = async () => {
-    if (!store.accessToken) return;
+    if (!store.accessToken || updatingCartItemId) return;
     try { await clearCart(store.accessToken); store.setCart([]); }
     catch (error) { setNotice(error instanceof Error ? error.message : t("clearCartFailed")); }
   };
@@ -311,7 +325,7 @@ export default function App() {
     } finally { setCancellingOrderId(null); }
   };
   const checkout = async () => {
-    if (!store.accessToken || store.cart.length === 0 || checkoutBusy) return;
+    if (!store.accessToken || store.cart.length === 0 || checkoutBusy || updatingCartItemId) return;
     setCheckoutBusy(true);
     try {
       await createOrder(store.accessToken, `checkout-${createClientId()}`);
@@ -376,7 +390,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <CartDrawer open={cartOpen} authenticated={Boolean(store.user)} cart={store.cart} onClose={() => setCartOpen(false)} onLogin={() => { setCartOpen(false); setAuthOpen(true); }} onRemove={async (id) => { if (!store.accessToken) return; try { await removeCart(store.accessToken, id); store.setCart(await fetchCart(store.accessToken)); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onClear={emptyCart} onCheckout={checkout} checkoutBusy={checkoutBusy} />
+        <CartDrawer open={cartOpen} authenticated={Boolean(store.user)} cart={store.cart} onClose={() => setCartOpen(false)} onLogin={() => { setCartOpen(false); setAuthOpen(true); }} onRemove={async (id) => { if (!store.accessToken) return; try { await removeCart(store.accessToken, id); store.setCart(await fetchCart(store.accessToken)); } catch (error) { setNotice(error instanceof Error ? error.message : t("removeFailed")); } }} onChangeQuantity={changeCartQuantity} onClear={emptyCart} onCheckout={checkout} checkoutBusy={checkoutBusy} updatingItemId={updatingCartItemId} />
         <AuthOverlay open={authOpen} onClose={() => setAuthOpen(false)} onSubmit={authenticate} />
         <CartFlight flight={flight} />
         <NetworkNotice />
