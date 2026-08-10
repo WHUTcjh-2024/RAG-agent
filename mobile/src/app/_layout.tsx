@@ -10,6 +10,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background }, animation: "fade_from_bottom", animationDuration: 260 }}>
         <Stack.Screen name="(tabs)" options={{ animation: "fade" }} />
         <Stack.Screen name="product/[id]" options={{ presentation: "card", animation: "slide_from_right" }} />
+        <Stack.Screen name="try-on/[id]" options={{ presentation: "card", animation: "slide_from_right" }} />
         <Stack.Screen name="compare" options={{ presentation: "card", animation: "slide_from_bottom" }} />
         <Stack.Screen name="cart" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
         <Stack.Screen name="auth" options={{ presentation: "modal", animation: "slide_from_bottom" }} />

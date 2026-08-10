@@ -33,7 +33,7 @@ public class TrustedAgentContextFilter implements WebFilter {
         String path = exchange.getRequest().getURI().getPath();
         if (!path.equals("/api/chat") && !path.equals("/api/chat/stream")
             && !path.startsWith("/api/actions/") && !path.startsWith("/api/agent/")
-            && !path.startsWith("/api/tasks/")) {
+            && !path.startsWith("/api/tasks/") && !path.startsWith("/api/try-on/")) {
             return chain.filter(exchange);
         }
         ServerHttpRequest.Builder request = exchange.getRequest().mutate();

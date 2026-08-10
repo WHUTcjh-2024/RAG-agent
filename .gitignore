@@ -12,6 +12,7 @@ backend/data/tianchi-catalog/
 backend/data/.tianchi_catalog_*/
 backend/data/vector_store/
 backend/data/sqlite/
+backend/data/tryon/
 *.db
 *.sqlite
 

@@ -5,7 +5,9 @@ import {
   addCart,
   buildProductQuery,
   cancelOrder,
+  createVirtualTryOn,
   createOrder,
+  fetchVirtualTryOn,
   updateCartQuantity,
   fetchOrderDetail,
   fetchOrders,
@@ -228,6 +230,43 @@ describe("buildProductQuery", () => {
       onMessage: vi.fn(),
       onError: vi.fn()
     });
+  });
+});
+
+describe("virtual try-on APIs", () => {
+  it("uploads consented photos with an idempotency key and polls with authorization", async () => {
+    const job = {
+      id: "try-on-1",
+      product_id: "product-1",
+      category: "dress",
+      status: "QUEUED",
+      created_at: "2026-08-10T00:00:00Z",
+      updated_at: "2026-08-10T00:00:00Z",
+      expires_at: "2026-08-11T00:00:00Z",
+      retry_after_seconds: 2,
+      attempt_count: 0,
+      photo_quality: { score: 100, warnings: [] },
+      result: null,
+      failure: null
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/try-on/jobs") {
+        expect(init?.headers).toEqual({ Authorization: "Bearer token-123", "Idempotency-Key": "try-on-key-123" });
+        const form = init?.body as FormData;
+        expect(form.get("product_id")).toBe("product-1");
+        expect(form.get("consent")).toBe("true");
+        expect(form.get("person_image")).toBeInstanceOf(File);
+      } else {
+        expect(url).toBe("/api/try-on/jobs/try-on-1");
+        expect(init?.headers).toEqual({ Authorization: "Bearer token-123" });
+      }
+      return new Response(JSON.stringify(job), { status: 202, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const photo = new File(["photo"], "portrait.jpg", { type: "image/jpeg" });
+
+    await expect(createVirtualTryOn("token-123", "product-1", photo, "try-on-key-123")).resolves.toEqual(job);
+    await expect(fetchVirtualTryOn("token-123", "try-on-1")).resolves.toEqual(job);
   });
 });
 

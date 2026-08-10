@@ -1,4 +1,4 @@
-import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, OrderDetail, OrderSummary, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, OrderDetail, OrderSummary, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, VirtualTryOnJob, WardrobePlan, WardrobeSnapshot } from "../types";
 import { createClientId } from "../utils/clientId";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
@@ -114,6 +114,30 @@ export async function fetchProduct(id: string): Promise<Product> {
 
 export async function fetchFacets(): Promise<ProductFacets> {
   return (await ensureOk(await fetch("/api/products/facets"))).json();
+}
+
+export async function createVirtualTryOn(
+  token: string,
+  productId: string,
+  personImage: File,
+  idempotencyKey = createClientId()
+): Promise<VirtualTryOnJob> {
+  const form = new FormData();
+  form.append("product_id", productId);
+  form.append("person_image", personImage, personImage.name || "try-on.jpg");
+  form.append("consent", "true");
+  const response = await ensureOk(await fetch("/api/try-on/jobs", {
+    method: "POST",
+    headers: { ...authorized(token), "Idempotency-Key": idempotencyKey },
+    body: form
+  }));
+  return response.json();
+}
+
+export async function fetchVirtualTryOn(token: string, jobId: string): Promise<VirtualTryOnJob> {
+  return (await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}`, {
+    headers: authorized(token)
+  }))).json();
 }
 
 type StreamHandlers = {

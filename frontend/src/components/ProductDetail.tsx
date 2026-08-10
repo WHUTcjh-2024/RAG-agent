@@ -1,5 +1,6 @@
 import { ArrowLeft, ShoppingCart } from "lucide-react";
 import { productImage } from "../api/client";
+import { VirtualTryOn } from "./VirtualTryOn";
 import { useTranslation } from "../i18n";
 import type { Product } from "../types";
 import { formatCatalogPrice } from "../utils/formatters";
@@ -9,9 +10,11 @@ type Props = {
   product: Product;
   onClose: () => void;
   onAdd: (id: string, origin: DOMRect) => Promise<boolean>;
+  accessToken: string;
+  onRequireLogin: () => void;
 };
 
-export function ProductDetail({ product, onClose, onAdd }: Props) {
+export function ProductDetail({ product, onClose, onAdd, accessToken, onRequireLogin }: Props) {
   const { t } = useTranslation();
   const name = productDisplayName(product);
   const facts = [
@@ -45,6 +48,7 @@ export function ProductDetail({ product, onClose, onAdd }: Props) {
             <h2>{t("productMaterial")}</h2>
             <p>{productDisplayDescription(product.detail_desc)}</p>
           </section>
+          <VirtualTryOn product={product} accessToken={accessToken} onRequireLogin={onRequireLogin} />
         </div>
       </div>
     </main>
