@@ -16,8 +16,9 @@ services:
       AGENT_CONTEXT_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
     volumes:
       - ./backend/data/sqlite:/app/data/sqlite
-    ports:
-      - "18000:18000"
+    # 仅供 Docker 内部服务（Java 网关）访问，禁止绕过网关直连。
+    expose:
+      - "18000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:18000/health').status == 200"]
       interval: 15s
@@ -71,8 +72,9 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
-    ports:
-      - "8080:8080"
+    # 仅供前端反向代理访问；对外入口统一由 frontend 提供。
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/actuator/health"]
       interval: 15s
