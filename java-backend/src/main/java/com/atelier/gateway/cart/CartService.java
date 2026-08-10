@@ -2,12 +2,11 @@ package com.atelier.gateway.cart;
 
 import com.atelier.gateway.cart.CartResponses.CartItemView;
 import com.atelier.gateway.cart.CartResponses.CartView;
+import com.atelier.gateway.catalog.CatalogProductGateway;
+import com.atelier.gateway.catalog.CatalogProductSnapshot;
 import com.atelier.gateway.common.ApiException;
-import com.atelier.gateway.decision.ProductSkuFact;
-import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.security.JwtTokenService;
 import com.atelier.gateway.user.UserRepository;
-import java.math.BigDecimal;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -20,7 +19,7 @@ public class CartService {
     private final JwtTokenService jwtTokenService;
     private final AgentActionTokenService actionTokenService;
     private final AgentCartActionCommitRepository actionCommitRepository;
-    private final ProductSkuFactRepository productFactRepository;
+    private final CatalogProductGateway catalogProductGateway;
 
     public CartService(
         CartItemRepository cartItemRepository,
@@ -28,14 +27,14 @@ public class CartService {
         JwtTokenService jwtTokenService,
         AgentActionTokenService actionTokenService,
         AgentCartActionCommitRepository actionCommitRepository,
-        ProductSkuFactRepository productFactRepository
+        CatalogProductGateway catalogProductGateway
     ) {
         this.cartItemRepository = cartItemRepository;
         this.userRepository = userRepository;
         this.jwtTokenService = jwtTokenService;
         this.actionTokenService = actionTokenService;
         this.actionCommitRepository = actionCommitRepository;
-        this.productFactRepository = productFactRepository;
+        this.catalogProductGateway = catalogProductGateway;
     }
 
     @Transactional
@@ -65,19 +64,11 @@ public class CartService {
                 .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "Confirmed cart item is no longer available"));
             return CartItemView.from(priorItem);
         }
-        ProductSkuFact fact = productFactRepository.findById(action.product_id())
-            .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "Current product facts are unavailable"));
-        if (!Boolean.TRUE.equals(fact.getInStock())) {
-            throw new ApiException(HttpStatus.CONFLICT, "Product is no longer in stock");
-        }
-        BigDecimal expectedPrice = new BigDecimal(action.expected_price());
-        if (fact.getPrice() == null || fact.getPrice().compareTo(expectedPrice) != 0) {
+        CatalogProductSnapshot snapshot = catalogProductGateway.fetch(action.product_id());
+        if (snapshot.unitPrice().compareTo(expectedPrice(action.expected_price())) != 0) {
             throw new ApiException(HttpStatus.CONFLICT, "Product price changed; request a new confirmation");
         }
-        CartItem item = addItem(userId, new AddCartItemRequest(
-            action.product_id(), action.product_name(), action.product_image_url(),
-            fact.getPrice(), action.quantity(), true
-        ));
+        CartItem item = addItem(userId, snapshot, requireQuantity(action.quantity()));
         actionCommitRepository.save(AgentCartActionCommit.create(
             action.action_id(), userId, action.product_id(), item.getId()
         ));
@@ -86,24 +77,28 @@ public class CartService {
 
     private CartItem addItem(UUID userId, AddCartItemRequest request) {
         String productId = requireText(request.productId(), "Product id is required");
-        String productName = requireText(request.productName(), "Product name is required");
-        BigDecimal unitPrice = requireUnitPrice(request.unitPrice());
         int quantity = requireQuantity(request.quantity());
-        Boolean selected = request.selected();
+        return addItem(userId, catalogProductGateway.fetch(productId), quantity);
+    }
+
+    private CartItem addItem(UUID userId, CatalogProductSnapshot snapshot, int quantity) {
+        String productId = snapshot.productId();
+        String productName = snapshot.productName();
+        String productImageUrl = normalizedImageUrl(snapshot.productImageUrl());
 
         CartItem item = cartItemRepository.findByUserIdAndProductId(userId, productId)
             .map(existing -> {
-                existing.addQuantity(quantity, productName, normalizedImageUrl(request.productImageUrl()), unitPrice, selected);
+                existing.addQuantity(quantity, productName, productImageUrl, snapshot.unitPrice(), true);
                 return existing;
             })
             .orElseGet(() -> CartItem.create(
                 userId,
                 productId,
                 productName,
-                normalizedImageUrl(request.productImageUrl()),
-                unitPrice,
+                productImageUrl,
+                snapshot.unitPrice(),
                 quantity,
-                selected == null || selected
+                true
             ));
 
         return cartItemRepository.save(item);
@@ -179,18 +174,22 @@ public class CartService {
         return value.trim();
     }
 
-    private BigDecimal requireUnitPrice(BigDecimal unitPrice) {
-        if (unitPrice == null || unitPrice.compareTo(BigDecimal.ZERO) < 0) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "Unit price must be at least 0");
-        }
-        return unitPrice;
-    }
-
     private int requireQuantity(Integer quantity) {
         if (quantity == null || quantity < 1) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Quantity must be at least 1");
         }
         return quantity;
+    }
+
+    private java.math.BigDecimal expectedPrice(String value) {
+        if (value == null || value.isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Agent confirmation is invalid or expired");
+        }
+        try {
+            return new java.math.BigDecimal(value);
+        } catch (NumberFormatException exception) {
+            throw new ApiException(HttpStatus.CONFLICT, "Agent confirmation is invalid or expired");
+        }
     }
 
     private ApiException cartItemNotFound() {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Slots, ToolTrace } from "../types";
+import type { Product, Slots, ToolTrace } from "../types";
 import {
   ApiClientError,
+  addCart,
   buildProductQuery,
   cancelOrder,
   createOrder,
@@ -15,6 +16,31 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("cart APIs", () => {
+  it("submits only the product identifier and quantity", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.body).toBe(JSON.stringify({ productId: "prod-1", quantity: 1 }));
+      return new Response(JSON.stringify({ id: "cart-item-1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await addCart("token-123", {
+      article_id: "prod-1",
+      prod_name: "Untrusted client name",
+      image_url: "https://cdn.example.com/client-image.jpg",
+      price: 0.01
+    } as Product);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/cart/items", expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer token-123" })
+    }));
+  });
 });
 
 describe("buildProductQuery", () => {

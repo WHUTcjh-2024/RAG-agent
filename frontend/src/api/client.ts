@@ -329,11 +329,7 @@ export async function addCart(token: string, product: Product): Promise<CartItem
     headers: { ...authorized(token), "Content-Type": "application/json" },
     body: JSON.stringify({
       productId: product.article_id,
-      productName: product.prod_name,
-      productImageUrl: productImage(product),
-      unitPrice: product.price,
-      quantity: 1,
-      selected: true
+      quantity: 1
     })
   }));
   return response.json();
