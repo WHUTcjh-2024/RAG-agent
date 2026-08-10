@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRight, Check, Minus, ShoppingBag, UserRound, Wifi, WifiOff, X } from "lucide-react";
+import { ArrowRight, Check, Minus, Plus, ShoppingBag, UserRound, Wifi, WifiOff, X } from "lucide-react";
 import { useTranslation } from "../i18n";
 import { motionTokens } from "../motion/tokens";
 import type { CartItem } from "../types";
@@ -29,14 +29,17 @@ type CartProps = {
   onClose: () => void;
   onLogin: () => void;
   onRemove: (id: string) => void;
+  onChangeQuantity: (id: string, quantity: number) => Promise<void>;
   onClear: () => void;
   onCheckout: () => Promise<void>;
   checkoutBusy: boolean;
+  updatingItemId: string | null;
 };
 
-export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemove, onClear, onCheckout, checkoutBusy }: CartProps) {
+export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemove, onChangeQuantity, onClear, onCheckout, checkoutBusy, updatingItemId }: CartProps) {
   const { t } = useTranslation();
   const total = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  const cartBusy = checkoutBusy || updatingItemId !== null;
   return (
     <SpatialShell open={open} title={t("cart")} onClose={onClose}>
       {!authenticated ? (
@@ -47,15 +50,35 @@ export function CartDrawer({ open, authenticated, cart, onClose, onLogin, onRemo
         <div className="cart-layout">
           <div className="cart-items">
             <AnimatePresence mode="popLayout">
-              {cart.map((item) => (
-                <motion.article layout key={item.id} initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 40, height: 0 }}>
-                  <img src={item.productImageUrl || ""} alt={item.productName} />
-                  <div><h3>{item.productName}</h3><p>{item.unitPrice.toFixed(4)} · × {item.quantity}</p><button onClick={() => onRemove(item.id)}><Minus size={12} />{t("remove")}</button></div>
-                </motion.article>
-              ))}
+              {cart.map((item) => {
+                const busy = item.id === updatingItemId;
+                return (
+                  <motion.article layout key={item.id} initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 40, height: 0 }}>
+                    <img src={item.productImageUrl || ""} alt={item.productName} />
+                    <div>
+                      <h3>{item.productName}</h3>
+                      <p>{item.unitPrice.toFixed(4)} · × {item.quantity}</p>
+                      <div className="cart-item-actions">
+                        <div className="quantity-stepper" aria-label={t("cart")}>
+                          <button type="button" aria-label={t("decreaseQuantity")} disabled={busy || item.quantity <= 1} onClick={() => void onChangeQuantity(item.id, item.quantity - 1)}>
+                            <Minus size={12} />
+                          </button>
+                          <span aria-live="polite">{item.quantity}</span>
+                          <button type="button" aria-label={t("increaseQuantity")} disabled={busy} onClick={() => void onChangeQuantity(item.id, item.quantity + 1)}>
+                            <Plus size={12} />
+                          </button>
+                        </div>
+                        <button className="cart-remove" type="button" disabled={busy} onClick={() => onRemove(item.id)}>
+                          <Minus size={12} />{t("remove")}
+                        </button>
+                      </div>
+                    </div>
+                  </motion.article>
+                );
+              })}
             </AnimatePresence>
           </div>
-          <footer className="cart-footer"><div><span>Total</span><strong>{total.toFixed(4)}</strong></div><button type="button" disabled={checkoutBusy} onClick={() => void onCheckout()}>{checkoutBusy ? t("submittingOrder") : t("submitOrder")}</button><button type="button" disabled={checkoutBusy} onClick={onClear}>{t("clearCart")}</button></footer>
+          <footer className="cart-footer"><div><span>Total</span><strong>{total.toFixed(4)}</strong></div><button type="button" disabled={cartBusy} onClick={() => void onCheckout()}>{checkoutBusy ? t("submittingOrder") : t("submitOrder")}</button><button type="button" disabled={cartBusy} onClick={onClear}>{t("clearCart")}</button></footer>
         </div>
       )}
     </SpatialShell>

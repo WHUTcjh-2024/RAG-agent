@@ -5,6 +5,7 @@ import {
   buildProductQuery,
   cancelOrder,
   createOrder,
+  updateCartQuantity,
   fetchOrderDetail,
   fetchOrders,
   fetchProducts,
@@ -349,5 +350,45 @@ describe("order APIs", () => {
       requestId: "request-order-400",
       retryable: false
     });
+  });
+});
+
+describe("cart APIs", () => {
+  it("updates a cart item quantity with authorization", async () => {
+    const item = {
+      id: "item-1",
+      productId: "product-1",
+      productName: "Linen Shirt",
+      productImageUrl: null,
+      unitPrice: 99.5,
+      quantity: 2,
+      selected: true,
+      createdAt: "2026-08-10T00:00:00Z",
+      updatedAt: "2026-08-10T00:00:01Z"
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe("/api/cart/items/item%2Fneeds%20encoding");
+      expect(init).toMatchObject({
+        method: "PATCH",
+        headers: { Authorization: "Bearer token-123", "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: 2 })
+      });
+      return new Response(JSON.stringify(item), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(updateCartQuantity("token-123", "item/needs encoding", 2)).resolves.toEqual(item);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects non-integer quantities before calling fetch", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(updateCartQuantity("token-123", "item-1", 0)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+    await expect(updateCartQuantity("token-123", "item-1", -1)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+    await expect(updateCartQuantity("token-123", "item-1", 1.5)).rejects.toThrow("购物袋商品数量必须为大于等于 1 的整数");
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

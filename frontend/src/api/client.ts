@@ -339,6 +339,18 @@ export async function addCart(token: string, product: Product): Promise<CartItem
   return response.json();
 }
 
+export async function updateCartQuantity(token: string, itemId: string, quantity: number): Promise<CartItem> {
+  if (!Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 1) {
+    throw new Error("购物袋商品数量必须为大于等于 1 的整数");
+  }
+  const response = await ensureOk(await fetch(`/api/cart/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ quantity })
+  }));
+  return response.json();
+}
+
 export async function confirmAgentCartAction(token: string, action: PendingCartAction): Promise<CartItem> {
   const response = await ensureOk(await fetch("/api/cart/agent-actions/confirm", {
     method: "POST",
