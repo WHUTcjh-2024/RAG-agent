@@ -14,8 +14,14 @@ services:
       AGENT_FACTS_BASE_URL: http://java-backend:8080
       AGENT_FACTS_INTERNAL_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
       AGENT_CONTEXT_TOKEN: ${AGENT_INTERNAL_TOKEN:?Set AGENT_INTERNAL_TOKEN in .env}
+      VTO_DB_PATH: /app/data/tryon/jobs.db
+      VTO_MEDIA_DIR: /app/data/tryon/media
+      VTO_PROVIDER_URL: ${VTO_PROVIDER_URL:-}
+      VTO_PROVIDER_API_KEY: ${VTO_PROVIDER_API_KEY:-}
+      VTO_RESULT_SIGNING_SECRET: ${VTO_RESULT_SIGNING_SECRET:-}
     volumes:
       - ./backend/data/sqlite:/app/data/sqlite
+      - ./backend/data/tryon:/app/data/tryon
     # 仅供 Docker 内部服务（Java 网关）访问，禁止绕过网关直连。
     expose:
       - "18000"

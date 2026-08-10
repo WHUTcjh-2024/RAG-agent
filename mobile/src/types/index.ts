@@ -64,3 +64,18 @@ export interface ProductPage { page: number; page_size: number; total: number; i
 export interface ProductFacets { categories: string[]; colors: string[]; index_groups: string[]; price_range: [number, number] | null }
 export interface ProductQuery { page?: number; pageSize?: number; search?: string; category?: string; color?: string; indexGroup?: string; maxPrice?: number; sort?: "article_id" | "name" | "popular" }
 export interface PickedImage { uri: string; name: string; mimeType: string }
+export type VirtualTryOnStatus = "QUEUED" | "PROCESSING" | "SUCCEEDED" | "FAILED";
+export interface VirtualTryOnJob {
+  id: string;
+  product_id: string;
+  category: string;
+  status: VirtualTryOnStatus;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  retry_after_seconds: number | null;
+  attempt_count: number;
+  photo_quality: { score: number; warnings: string[] };
+  result: { url: string } | null;
+  failure: { code: string } | null;
+}

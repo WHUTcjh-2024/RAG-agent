@@ -358,7 +358,7 @@ export default function App() {
   ) : pathname === "/orders" ? (
     <OrdersScreen authenticated={Boolean(store.user)} orders={orders} loading={ordersLoading} error={ordersError} cancellingOrderId={cancellingOrderId} onLogin={() => setAuthOpen(true)} onDiscover={() => transitionNavigate("/discover")} onCancel={cancelExistingOrder} />
   ) : pathname.startsWith("/product/") ? (
-    <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} /> : loadingPage}</Suspense>
+    <Suspense fallback={loadingPage}>{detail ? <ProductDetail product={detail} onClose={() => transitionNavigate(-1)} onAdd={add} accessToken={store.accessToken} onRequireLogin={() => setAuthOpen(true)} /> : loadingPage}</Suspense>
   ) : pathname === "/compare" ? (
     <Suspense fallback={loadingPage}><CompareWorkspace products={store.comparison.length ? store.comparison : catalogProducts.filter((product) => store.compareIds.includes(product.article_id))} onClose={() => transitionNavigate("/discover")} onRemove={store.toggleCompare} onDetail={showDetail} /></Suspense>
   ) : pathname === "/agent" ? (

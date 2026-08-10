@@ -214,3 +214,20 @@ export interface ProductQuery {
   maxPrice?: number;
   sort?: "article_id" | "name" | "popular";
 }
+
+export type VirtualTryOnStatus = "QUEUED" | "PROCESSING" | "SUCCEEDED" | "FAILED";
+
+export interface VirtualTryOnJob {
+  id: string;
+  product_id: string;
+  category: string;
+  status: VirtualTryOnStatus;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  retry_after_seconds: number | null;
+  attempt_count: number;
+  photo_quality: { score: number; warnings: string[] };
+  result: { url: string } | null;
+  failure: { code: string } | null;
+}

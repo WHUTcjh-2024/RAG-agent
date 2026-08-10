@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -12,6 +13,7 @@ from app.api.chat import router as chat_router
 from app.api.commerce import router as commerce_router
 from app.api.products import router as products_router
 from app.api.search import router as search_router
+from app.api.try_on import get_try_on_service, router as try_on_router
 from app.core.agent.errors import AgentException, invalid_input
 from app.core.catalog_paths import (
     get_catalog_image_dir,
@@ -37,9 +39,16 @@ if not app_logger.handlers:
     )
     app_logger.addHandler(app_handler)
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await get_try_on_service().recover()
+    yield
+
+
 app = FastAPI(
     title="RAG Multimodal Shopping Agent",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +63,7 @@ app.include_router(search_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(commerce_router, prefix="/api")
+app.include_router(try_on_router, prefix="/api")
 
 IMAGE_DIR = get_catalog_image_dir()
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)

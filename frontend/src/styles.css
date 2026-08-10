@@ -691,6 +691,30 @@ body { color: var(--ink); font-family: "PingFang SC", "Microsoft YaHei", "Noto S
 .demo-detail-page .detail-taxonomy { margin: 0; color: var(--muted); font-size: 13px; }
 .demo-detail-page .detail-price { margin: 14px 0; color: var(--primary); font-size: 26px; font-weight: 800; }
 .detail-add-button { width: 100%; min-height: 46px; display: flex; gap: 7px; align-items: center; justify-content: center; border-radius: 10px; color: white; background: var(--primary); font-size: 14px; font-weight: 700; }
+.virtual-tryon { margin-bottom: 12px; padding: 18px; border: 1px solid #d9d1df; border-radius: 14px; background: linear-gradient(145deg, #fbf8ff, #fffdfb 56%); }
+.tryon-heading > span { display: flex; gap: 7px; align-items: center; color: var(--primary); font-size: 15px; font-weight: 800; }
+.tryon-heading > p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.tryon-guidance { display: flex; gap: 7px; align-items: center; margin: 14px 0 10px; padding: 10px; border-radius: 10px; color: #665b6c; background: #f1edf3; font-size: 11px; }
+.tryon-workspace { display: grid; grid-template-columns: 112px 1fr; gap: 10px; min-height: 150px; }
+.tryon-picker { display: grid; place-items: center; min-height: 150px; overflow: hidden; border: 1px dashed #bdaec2; border-radius: 12px; color: var(--primary); background: #fff; font-size: 11px; font-weight: 700; }
+.tryon-picker > img { width: 100%; height: 100%; object-fit: cover; }
+.tryon-picker:not(:disabled):hover { border-color: var(--primary); background: #faf6fb; }
+.tryon-status { display: grid; align-content: center; justify-items: start; gap: 7px; min-height: 150px; padding: 15px; border-radius: 12px; color: #6c6370; background: #f4f1f2; }
+.tryon-status.is-active { color: #5f5365; background: #eee8f0; }
+.tryon-status strong { color: var(--ink); font-size: 13px; }
+.tryon-status span { font-size: 11px; line-height: 1.55; }
+.tryon-result { position: relative; min-height: 150px; margin: 0; overflow: hidden; border-radius: 12px; background: #eee; }
+.tryon-result img { width: 100%; height: 100%; object-fit: cover; }
+.tryon-result figcaption { position: absolute; right: 7px; bottom: 7px; display: flex; gap: 4px; align-items: center; padding: 5px 7px; border-radius: 7px; color: #fff; background: rgb(25 23 25 / 70%); font-size: 8px; backdrop-filter: blur(4px); }
+.tryon-consent { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; color: #5a545d; font-size: 10px; line-height: 1.45; cursor: pointer; }
+.tryon-consent input { width: 15px; height: 15px; margin: 0; accent-color: var(--primary); }
+.tryon-warnings { margin: 10px 0 0; padding: 0; list-style: none; color: #806343; font-size: 10px; line-height: 1.5; }
+.tryon-warnings li::before { content: "•"; margin-right: 5px; }
+.tryon-error { margin: 9px 0 0; color: #b43d45; font-size: 11px; }
+.tryon-generate { width: 100%; min-height: 43px; display: flex; gap: 7px; align-items: center; justify-content: center; margin-top: 13px; border-radius: 10px; color: #fff; background: var(--primary); font-size: 13px; font-weight: 800; }
+.tryon-generate:disabled { cursor: not-allowed; opacity: .52; }
+.tryon-spin { animation: tryon-spin .9s linear infinite; }
+@keyframes tryon-spin { to { transform: rotate(360deg); } }
 .demo-detail-page .detail-chapter { margin-bottom: 12px; }
 .demo-detail-page .detail-chapter h2 { margin: 0 0 12px; font-family: inherit; font-size: 18px; }
 .demo-detail-page .detail-chapter dl { margin: 0; }
