@@ -262,6 +262,42 @@ test("renders backend-driven workflow events and grounded evidence", async ({ pa
       'event: node\ndata: {"node":"build_evidence","state":"completed","duration_ms":12.5,"summary":"2 verified sources"}\n\n',
       `event: products\ndata: ${JSON.stringify({ items: [products[0]] })}\n\n`,
       'event: evidence\ndata: {"item":{"source_id":"catalog:0000000001","source_type":"catalog","field":"material","value":"Cotton"}}\n\n',
+      `event: decision\ndata: ${JSON.stringify({ card: {
+        decision_id: "decision-e2e-1",
+        verdict: "RECOMMEND_BUY",
+        confidence: 0.82,
+        recommended_size: "M",
+        fit_risks: [],
+        reasons: ["商品实测胸围与身体数据保留了合理余量。"],
+        evidence: [
+          { source_type: "BODY_PROFILE", source_id: "body-profile:e2e", field: "chestCm", value: "96", observed_at: "2026-08-10T00:00:00Z", source_kind: "USER_DECLARED", source_label: "用户填写的身体档案", confidence: 0.7, verified: true },
+          { source_type: "SKU_MEASUREMENT", source_id: "merchant:shirt-1", field: "chestCm", value: "104", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+          { source_type: "SKU_MEASUREMENT", source_id: "merchant:shirt-1", field: "size", value: "M", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+          { source_type: "PRICE", source_id: "merchant:shirt-1", field: "amount", value: "299", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+          { source_type: "INVENTORY", source_id: "merchant:shirt-1", field: "inStock", value: "true", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+          { source_type: "RETURN_POLICY", source_id: "merchant:shirt-1", field: "summary", value: "支持七天无理由退换", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true }
+        ],
+        fact_passport: {
+          product_id: "0000000001", sku_id: "sku-1-m", version: "facts-e2e-v1", observed_at: "2026-08-10T00:00:00Z", status: "VERIFIED",
+          facts: [
+            { source_type: "BODY_PROFILE", source_id: "body-profile:e2e", field: "chestCm", value: "96", observed_at: "2026-08-10T00:00:00Z", source_kind: "USER_DECLARED", source_label: "用户填写的身体档案", confidence: 0.7, verified: true },
+            { source_type: "SKU_MEASUREMENT", source_id: "merchant:shirt-1", field: "chestCm", value: "104", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+            { source_type: "SKU_MEASUREMENT", source_id: "merchant:shirt-1", field: "size", value: "M", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+            { source_type: "PRICE", source_id: "merchant:shirt-1", field: "amount", value: "299", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+            { source_type: "INVENTORY", source_id: "merchant:shirt-1", field: "inStock", value: "true", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true },
+            { source_type: "RETURN_POLICY", source_id: "merchant:shirt-1", field: "summary", value: "支持七天无理由退换", observed_at: "2026-08-10T00:00:00Z", source_kind: "MERCHANT_FEED", source_label: "商家商品数据", confidence: 0.95, verified: true }
+          ],
+          missing_fields: []
+        },
+        verification: {
+          status: "PASSED", missing_fields: [], checks: [
+            { code: "price.amount", label: "商品价格", status: "PASS", message: "商品价格已由商家商品数据核验。", evidence_refs: ["PRICE:amount"] },
+            { code: "budget", label: "预算约束", status: "PASS", message: "商品价格符合当前预算。", evidence_refs: ["PRICE:amount"] }
+          ]
+        },
+        missing_fields: [],
+        alternatives: []
+      } })}\n\n`,
       'event: message\ndata: {"delta":"白色衬衫符合通勤场景。"}\n\n',
       'event: done\ndata: {"ok":true}\n\n'
     ].join("")
@@ -277,6 +313,10 @@ test("renders backend-driven workflow events and grounded evidence", async ({ pa
   await expect(page.getByText("材质")).toBeVisible();
   await page.getByText("材质").click();
   await expect(page.getByText("棉", { exact: true })).toBeVisible();
+  await expect(page.getByText("商品事实护照")).toBeVisible();
+  await expect(page.getByText("全部校验通过")).toBeVisible();
+  await expect(page.getByText("建议尺码 M")).toBeVisible();
+  await expect(page.getByText("商家商品数据").first()).toBeVisible();
   await expect(page.locator(".grounded-conclusion").getByText("白色衬衫符合通勤场景。")).toBeVisible();
 });
 

@@ -33,6 +33,12 @@ public class ProductSkuFact {
     private String version;
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+    @Column(name = "source_kind", nullable = false)
+    private String sourceKind;
+    @Column(name = "source_reference", nullable = false)
+    private String sourceReference;
+    @Column(name = "source_confidence", nullable = false, precision = 3, scale = 2)
+    private BigDecimal sourceConfidence;
 
     protected ProductSkuFact() {
     }
@@ -41,6 +47,27 @@ public class ProductSkuFact {
         String productId, String skuId, String size, BigDecimal chestCm,
         BigDecimal price, Boolean inStock, String returnPolicy, String version
     ) {
+        return create(
+            productId, skuId, size, chestCm, price, inStock, returnPolicy, version,
+            "MERCHANT_FEED", "catalog:" + productId, new BigDecimal("0.95")
+        );
+    }
+
+    public static ProductSkuFact create(
+        String productId, String skuId, String size, BigDecimal chestCm,
+        BigDecimal price, Boolean inStock, String returnPolicy, String version,
+        String sourceKind, String sourceReference, BigDecimal sourceConfidence
+    ) {
+        if (sourceKind == null || sourceKind.isBlank()) {
+            throw new IllegalArgumentException("sourceKind is required");
+        }
+        if (sourceReference == null || sourceReference.isBlank()) {
+            throw new IllegalArgumentException("sourceReference is required");
+        }
+        if (sourceConfidence == null || sourceConfidence.compareTo(BigDecimal.ZERO) < 0
+            || sourceConfidence.compareTo(BigDecimal.ONE) > 0) {
+            throw new IllegalArgumentException("sourceConfidence must be between 0 and 1");
+        }
         ProductSkuFact fact = new ProductSkuFact();
         fact.productId = productId;
         fact.skuId = skuId;
@@ -51,6 +78,9 @@ public class ProductSkuFact {
         fact.returnPolicy = returnPolicy;
         fact.version = version;
         fact.updatedAt = Instant.now();
+        fact.sourceKind = sourceKind.trim();
+        fact.sourceReference = sourceReference.trim();
+        fact.sourceConfidence = sourceConfidence;
         return fact;
     }
 
@@ -65,4 +95,7 @@ public class ProductSkuFact {
     public String getReturnPolicy() { return returnPolicy; }
     public String getVersion() { return version; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public String getSourceKind() { return sourceKind; }
+    public String getSourceReference() { return sourceReference; }
+    public BigDecimal getSourceConfidence() { return sourceConfidence; }
 }

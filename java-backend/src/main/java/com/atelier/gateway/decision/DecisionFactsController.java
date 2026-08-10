@@ -74,17 +74,43 @@ public class DecisionFactsController {
             Map<String, Object> priceValues = new LinkedHashMap<>();
             Map<String, Object> inventoryValues = new LinkedHashMap<>();
             Map<String, Object> returnValues = new LinkedHashMap<>();
+            Map<String, Object> provenance = new LinkedHashMap<>();
             if (product != null) {
-                if (product.getChestCm() != null) measurementValues.put("chest_cm", product.getChestCm());
-                if (product.getSize() != null) measurementValues.put("size", product.getSize());
-                if (product.getPrice() != null) priceValues.put("amount", product.getPrice());
-                if (product.getInStock() != null) inventoryValues.put("in_stock", product.getInStock());
-                if (product.getReturnPolicy() != null) returnValues.put("summary", product.getReturnPolicy());
+                if (product.getChestCm() != null) {
+                    measurementValues.put("chest_cm", product.getChestCm());
+                    provenance.put("skuMeasurement.chestCm", productProvenance(product));
+                }
+                if (product.getSize() != null) {
+                    measurementValues.put("size", product.getSize());
+                    provenance.put("skuMeasurement.size", productProvenance(product));
+                }
+                if (product.getPrice() != null) {
+                    priceValues.put("amount", product.getPrice());
+                    provenance.put("price.amount", productProvenance(product));
+                }
+                if (product.getInStock() != null) {
+                    inventoryValues.put("in_stock", product.getInStock());
+                    provenance.put("inventory.inStock", productProvenance(product));
+                }
+                if (product.getReturnPolicy() != null) {
+                    returnValues.put("summary", product.getReturnPolicy());
+                    provenance.put("returnPolicy.summary", productProvenance(product));
+                }
+            }
+            if (profile != null && profile.getChestCm() != null) {
+                provenance.put("bodyProfile.chestCm", Map.of(
+                    "source_kind", "USER_DECLARED",
+                    "source_id", "body-profile:" + trustedUserId,
+                    "source_label", "用户填写的身体档案",
+                    "observed_at", profile.getUpdatedAt(),
+                    "confidence", new BigDecimal("0.70"),
+                    "verified", true
+                ));
             }
             return new DecisionFactsResponse(
                 trustedUserId.toString(), productId, product == null ? null : product.getSkuId(),
                 profileValues, measurementValues, priceValues, inventoryValues, returnValues,
-                product == null ? null : product.getVersion(), observedAt
+                product == null ? null : product.getVersion(), observedAt, provenance
             );
         }).subscribeOn(Schedulers.boundedElastic());
     }
@@ -100,12 +126,33 @@ public class DecisionFactsController {
         }
     }
 
+    private Map<String, Object> productProvenance(ProductSkuFact product) {
+        return Map.of(
+            "source_kind", product.getSourceKind(),
+            "source_id", product.getSourceReference(),
+            "source_label", sourceLabel(product.getSourceKind()),
+            "observed_at", product.getUpdatedAt(),
+            "confidence", product.getSourceConfidence(),
+            "verified", true
+        );
+    }
+
+    private String sourceLabel(String sourceKind) {
+        return switch (sourceKind) {
+            case "MERCHANT_FEED" -> "商家商品数据";
+            case "PARTNER_API" -> "合作方商品接口";
+            case "AFFILIATE_API" -> "联盟商品接口";
+            default -> "受控商品事实";
+        };
+    }
+
     public record UpdateBodyProfileRequest(BigDecimal chestCm) { }
     public record BodyProfileView(BigDecimal chestCm, Instant updatedAt) { }
     public record DecisionFactsResponse(
         String user_id, String product_id, String sku_id,
         Map<String, Object> profile, Map<String, Object> sku_measurements,
         Map<String, Object> price, Map<String, Object> inventory,
-        Map<String, Object> return_policy, String version, Instant observed_at
+        Map<String, Object> return_policy, String version, Instant observed_at,
+        Map<String, Object> provenance
     ) { }
 }

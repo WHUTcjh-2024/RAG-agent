@@ -65,6 +65,32 @@ export interface DecisionEvidence {
   field: string;
   value: string;
   observed_at: string;
+  source_kind?: "USER_DECLARED" | "USER_CONFIRMED" | "MERCHANT_FEED" | "PARTNER_API" | "AFFILIATE_API" | "OCR_CANDIDATE" | "MODEL_INFERENCE" | "UNKNOWN";
+  source_label?: string;
+  confidence?: number;
+  verified?: boolean;
+}
+
+export interface ProductFactPassport {
+  product_id: string;
+  sku_id?: string | null;
+  version?: string | null;
+  observed_at: string;
+  status: "VERIFIED" | "INCOMPLETE";
+  facts: DecisionEvidence[];
+  missing_fields: string[];
+}
+
+export interface DecisionVerification {
+  status: "PASSED" | "BLOCKED" | "REJECTED";
+  missing_fields: string[];
+  checks: {
+    code: string;
+    label: string;
+    status: "PASS" | "FAIL" | "SKIPPED";
+    message: string;
+    evidence_refs: string[];
+  }[];
 }
 
 export interface DecisionCard {
@@ -75,6 +101,8 @@ export interface DecisionCard {
   fit_risks: { area: string; level: "LOW" | "MEDIUM" | "HIGH"; message: string; evidence_refs: string[] }[];
   reasons: string[];
   evidence: DecisionEvidence[];
+  fact_passport?: ProductFactPassport;
+  verification?: DecisionVerification;
   missing_fields: string[];
   alternatives: Product[];
 }
@@ -213,4 +241,21 @@ export interface ProductQuery {
   indexGroup?: string;
   maxPrice?: number;
   sort?: "article_id" | "name" | "popular";
+}
+
+export type VirtualTryOnStatus = "QUEUED" | "PROCESSING" | "SUCCEEDED" | "FAILED";
+
+export interface VirtualTryOnJob {
+  id: string;
+  product_id: string;
+  category: string;
+  status: VirtualTryOnStatus;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  retry_after_seconds: number | null;
+  attempt_count: number;
+  photo_quality: { score: number; warnings: string[] };
+  result: { url: string } | null;
+  failure: { code: string } | null;
 }
