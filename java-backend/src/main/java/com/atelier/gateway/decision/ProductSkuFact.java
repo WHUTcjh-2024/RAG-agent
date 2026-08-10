@@ -15,6 +15,10 @@ public class ProductSkuFact {
     private String productId;
     @Column(name = "sku_id", nullable = false)
     private String skuId;
+    @Column(name = "product_name")
+    private String productName;
+    @Column(name = "product_image_url")
+    private String productImageUrl;
     @Column(name = "size")
     private String size;
     @Column(name = "chest_cm", precision = 6, scale = 2)
@@ -52,6 +56,8 @@ public class ProductSkuFact {
 
     public String getProductId() { return productId; }
     public String getSkuId() { return skuId; }
+    public String getProductName() { return productName; }
+    public String getProductImageUrl() { return productImageUrl; }
     public String getSize() { return size; }
     public BigDecimal getChestCm() { return chestCm; }
     public BigDecimal getPrice() { return price; }

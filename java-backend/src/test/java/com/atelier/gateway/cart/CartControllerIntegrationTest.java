@@ -1,10 +1,13 @@
 package com.atelier.gateway.cart;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.reset;
 
+import com.atelier.gateway.catalog.CatalogProductGateway;
+import com.atelier.gateway.catalog.CatalogProductSnapshot;
+import com.atelier.gateway.common.ApiException;
 import com.atelier.gateway.user.UserRepository;
-import com.atelier.gateway.decision.ProductSkuFact;
-import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.security.JwtTokenService;
 import com.atelier.gateway.wardrobe.WardrobeFeedbackEventRepository;
 import com.atelier.gateway.wardrobe.WardrobeItemRepository;
@@ -24,7 +27,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -42,8 +47,8 @@ class CartControllerIntegrationTest {
     @Autowired
     private UserRepository userRepository;
 
-    @Autowired
-    private ProductSkuFactRepository productFactRepository;
+    @MockBean
+    private CatalogProductGateway catalogProductGateway;
 
     @Autowired
     private AgentCartActionCommitRepository actionCommitRepository;
@@ -71,7 +76,7 @@ class CartControllerIntegrationTest {
         wardrobeFeedbackRepository.deleteAll();
         wardrobeItemRepository.deleteAll();
         wardrobeVersionRepository.deleteAll();
-        productFactRepository.deleteAll();
+        reset(catalogProductGateway);
         try {
             jdbcTemplate.update("DELETE FROM cart_items");
         } catch (BadSqlGrammarException ignored) {
@@ -85,7 +90,7 @@ class CartControllerIntegrationTest {
         webTestClient.post()
             .uri("/api/cart/items")
             .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue(addItemJson("sku-001", "Vintage Coat", "/media/coat.png", "129.99", 1))
+            .bodyValue(addItemJson("sku-001", 1))
             .exchange()
             .expectStatus().isEqualTo(401)
             .expectBody()
@@ -93,10 +98,24 @@ class CartControllerIntegrationTest {
     }
 
     @Test
-    void addItemReturnsSnapshotAndCartListsCurrentUserItems() throws IOException {
+    void addItemUsesServerCatalogSnapshot() throws IOException {
         String token = registerAndToken("cart@example.com");
+        stubCatalog("sku-001", "Vintage Coat", "/media/coat.png", "129.99");
 
-        byte[] response = addItem(token, "sku-001", "Vintage Coat", "/media/coat.png", "129.99", 2)
+        byte[] response = webTestClient.post()
+            .uri("/api/cart/items")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("""
+                {
+                  "productId": "sku-001",
+                  "productName": "Forged Coat",
+                  "productImageUrl": "/media/forged.png",
+                  "unitPrice": 0.01,
+                  "quantity": 2
+                }
+                """)
+            .exchange()
             .expectStatus().isOk()
             .expectBody()
             .jsonPath("$.id").isNotEmpty()
@@ -120,6 +139,25 @@ class CartControllerIntegrationTest {
             .jsonPath("$.items[0].id").isEqualTo(itemId)
             .jsonPath("$.items[0].productId").isEqualTo("sku-001")
             .jsonPath("$.items[0].quantity").isEqualTo(2);
+    }
+
+    @Test
+    void addItemRejectsMissingOrUnavailableCatalogProducts() {
+        String token = registerAndToken("unavailable@example.com");
+
+        given(catalogProductGateway.fetch("missing-sku"))
+            .willThrow(new ApiException(HttpStatus.NOT_FOUND, "商品不存在"));
+        addItemRequest(token, "missing-sku", 1)
+            .expectStatus().isNotFound()
+            .expectBody()
+            .jsonPath("$.detail").isEqualTo("商品不存在");
+
+        given(catalogProductGateway.fetch("unavailable-sku"))
+            .willThrow(new ApiException(HttpStatus.BAD_GATEWAY, "商品目录暂不可用"));
+        addItemRequest(token, "unavailable-sku", 1)
+            .expectStatus().isEqualTo(502)
+            .expectBody()
+            .jsonPath("$.detail").isEqualTo("商品目录暂不可用");
     }
 
     @Test
@@ -152,10 +190,7 @@ class CartControllerIntegrationTest {
     void agentConfirmationVerifiesFactsAndIsIdempotent() throws Exception {
         String token = registerAndToken("agent-action@example.com");
         UUID userId = jwtTokenService.parseUserId(token);
-        productFactRepository.save(ProductSkuFact.create(
-            "agent-sku", "sku-agent", "M", new BigDecimal("52"),
-            new BigDecimal("129.99"), true, "30 days", "v1"
-        ));
+        stubCatalog("agent-sku", "Agent Coat", "/media/coat.png", "129.99");
         String confirmation = agentConfirmationToken("action-1", userId, "agent-sku", "129.99");
 
         byte[] first = webTestClient.post()
@@ -195,6 +230,24 @@ class CartControllerIntegrationTest {
             .bodyValue("{\"confirmationToken\":\"%s\"}".formatted(confirmation))
             .exchange()
             .expectStatus().isEqualTo(409);
+    }
+
+    @Test
+    void agentConfirmationRejectsAStaleServerPrice() throws Exception {
+        String token = registerAndToken("stale-agent-price@example.com");
+        UUID userId = jwtTokenService.parseUserId(token);
+        stubCatalog("agent-stale-sku", "Updated Coat", "/media/updated.png", "139.99");
+        String confirmation = agentConfirmationToken("action-stale", userId, "agent-stale-sku", "129.99");
+
+        webTestClient.post()
+            .uri("/api/cart/agent-actions/confirm")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("{\"confirmationToken\":\"%s\"}".formatted(confirmation))
+            .exchange()
+            .expectStatus().isEqualTo(409)
+            .expectBody()
+            .jsonPath("$.detail").isEqualTo("Product price changed; request a new confirmation");
     }
 
     @Test
@@ -384,24 +437,32 @@ class CartControllerIntegrationTest {
         String unitPrice,
         int quantity
     ) {
+        stubCatalog(productId, productName, productImageUrl, unitPrice);
+        return addItemRequest(token, productId, quantity);
+    }
+
+    private WebTestClient.ResponseSpec addItemRequest(String token, String productId, int quantity) {
         return webTestClient.post()
             .uri("/api/cart/items")
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
             .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue(addItemJson(productId, productName, productImageUrl, unitPrice, quantity))
+            .bodyValue(addItemJson(productId, quantity))
             .exchange();
     }
 
-    private String addItemJson(String productId, String productName, String productImageUrl, String unitPrice, int quantity) {
+    private void stubCatalog(String productId, String productName, String productImageUrl, String unitPrice) {
+        given(catalogProductGateway.fetch(productId)).willReturn(new CatalogProductSnapshot(
+            productId, productName, productImageUrl, new BigDecimal(unitPrice)
+        ));
+    }
+
+    private String addItemJson(String productId, int quantity) {
         return """
             {
               "productId": "%s",
-              "productName": "%s",
-              "productImageUrl": "%s",
-              "unitPrice": %s,
               "quantity": %d
             }
-            """.formatted(productId, productName, productImageUrl, unitPrice, quantity);
+            """.formatted(productId, quantity);
     }
 
     private String registerAndToken(String email) {

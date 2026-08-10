@@ -1,7 +1,11 @@
 package com.atelier.gateway.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.reset;
 
+import com.atelier.gateway.catalog.CatalogProductGateway;
+import com.atelier.gateway.catalog.CatalogProductSnapshot;
 import com.atelier.gateway.user.UserRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,6 +24,7 @@ import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWeb
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.jdbc.BadSqlGrammarException;
@@ -36,6 +41,9 @@ class OrderControllerIntegrationTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    @MockBean
+    private CatalogProductGateway catalogProductGateway;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -60,6 +68,7 @@ class OrderControllerIntegrationTest {
             // The first RED run happens before the order migration exists.
         }
         jdbcTemplate.update("DELETE FROM cart_items");
+        reset(catalogProductGateway);
         userRepository.deleteAll();
         Cache orderLists = cacheManager.getCache("orderLists");
         if (orderLists != null) {
@@ -79,10 +88,14 @@ class OrderControllerIntegrationTest {
     @Test
     void createOrderCopiesSelectedItemsAndIsIdempotent() throws IOException {
         String token = registerAndToken("order@example.com");
-        addItem(token, "sku-001", "Vintage Coat", "/media/coat.png", "129.99", 2, true)
+        addItem(token, "sku-001", "Vintage Coat", "/media/coat.png", "129.99", 2)
             .expectStatus().isOk();
-        addItem(token, "sku-002", "Silk Scarf", "/media/scarf.png", "49.00", 1, false)
-            .expectStatus().isOk();
+        String unselectedItemId = idFrom(addItem(token, "sku-002", "Silk Scarf", "/media/scarf.png", "49.00", 1)
+            .expectStatus().isOk()
+            .expectBody()
+            .returnResult()
+            .getResponseBody());
+        setSelected(token, unselectedItemId, false);
 
         byte[] firstResponse = createOrder(token, "checkout-001")
             .expectStatus().isOk()
@@ -149,7 +162,7 @@ class OrderControllerIntegrationTest {
         assertThat(orderLists).isNotNull();
         assertThat(orderLists.get(userId)).isNotNull();
 
-        addItem(token, "sku-cache", "Cache Coat", "/media/cache.png", "88.00", 1, true)
+        addItem(token, "sku-cache", "Cache Coat", "/media/cache.png", "88.00", 1)
             .expectStatus().isOk();
         createOrder(token, "cache-create-001")
             .expectStatus().isOk();
@@ -184,7 +197,7 @@ class OrderControllerIntegrationTest {
     void usersCanListViewAndCancelOnlyTheirOwnOrders() throws IOException {
         String ownerToken = registerAndToken("order-owner@example.com");
         String otherToken = registerAndToken("order-other@example.com");
-        addItem(ownerToken, "sku-003", "Leather Boots", "/media/boots.png", "199.00", 1, true)
+        addItem(ownerToken, "sku-003", "Leather Boots", "/media/boots.png", "199.00", 1)
             .expectStatus().isOk();
         String orderId = idFrom(createOrder(ownerToken, "owner-order-001")
             .expectStatus().isOk()
@@ -247,7 +260,7 @@ class OrderControllerIntegrationTest {
     @Test
     void concurrentRequestsWithSameIdempotencyKeyCreateOnlyOneOrder() throws Exception {
         String token = registerAndToken("order-concurrent@example.com");
-        addItem(token, "sku-004", "Cashmere Sweater", "/media/sweater.png", "159.00", 1, true)
+        addItem(token, "sku-004", "Cashmere Sweater", "/media/sweater.png", "159.00", 1)
             .expectStatus().isOk();
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -284,9 +297,11 @@ class OrderControllerIntegrationTest {
         String productName,
         String productImageUrl,
         String unitPrice,
-        int quantity,
-        boolean selected
+        int quantity
     ) {
+        given(catalogProductGateway.fetch(productId)).willReturn(new CatalogProductSnapshot(
+            productId, productName, productImageUrl, new java.math.BigDecimal(unitPrice)
+        ));
         return webTestClient.post()
             .uri("/api/cart/items")
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
@@ -294,14 +309,20 @@ class OrderControllerIntegrationTest {
             .bodyValue("""
                 {
                   "productId": "%s",
-                  "productName": "%s",
-                  "productImageUrl": "%s",
-                  "unitPrice": %s,
-                  "quantity": %d,
-                  "selected": %s
+                  "quantity": %d
                 }
-                """.formatted(productId, productName, productImageUrl, unitPrice, quantity, selected))
+                """.formatted(productId, quantity))
             .exchange();
+    }
+
+    private void setSelected(String token, String itemId, boolean selected) {
+        webTestClient.patch()
+            .uri("/api/cart/items/{itemId}", itemId)
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("{\"selected\": %s}".formatted(selected))
+            .exchange()
+            .expectStatus().isOk();
     }
 
     private String registerAndToken(String email) {
