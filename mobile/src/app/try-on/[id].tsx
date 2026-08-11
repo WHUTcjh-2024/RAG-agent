@@ -1,31 +1,57 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Image } from "expo-image";
-import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ArrowLeft, Camera, CheckCircle2, ImagePlus, LoaderCircle, RefreshCw, Sparkles, TriangleAlert } from "lucide-react-native";
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ArrowLeft, CheckCircle2, Heart, LoaderCircle, RefreshCw, Share2, Sparkles, ThumbsDown, ThumbsUp, Trash2, UserRound } from "lucide-react-native";
+import { ActivityIndicator, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { createVirtualTryOn, fetchProduct, fetchVirtualTryOn } from "@/api/client";
+import {
+  createVirtualTryOn,
+  deleteVirtualTryOn,
+  feedbackVirtualTryOn,
+  fetchProduct,
+  fetchVirtualTryOn,
+  listVirtualTryOns,
+  saveVirtualTryOn,
+  shareVirtualTryOn
+} from "@/api/client";
 import { assetUrl } from "@/config/environment";
 import { useAppStore } from "@/store/use-app-store";
 import { colors, radius, type } from "@/theme/tokens";
-import type { PickedImage, Product, VirtualTryOnJob } from "@/types";
+import type { Product } from "@/types";
+import type { SyntheticBodyProfile, VirtualTryOnJob } from "@/types/try-on";
 
-const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const DEFAULT_PROFILE: SyntheticBodyProfile = {
+  height_cm: 168, weight_kg: 58, chest_cm: 88, waist_cm: 70, hip_cm: 94,
+  shoulder_cm: 40, inseam_cm: 76, presentation: "NEUTRAL", body_shape: "BALANCED",
+  skin_tone: "MEDIUM", fit_preference: "REGULAR",
+};
 
-function toPickedImage(asset: ImagePicker.ImagePickerAsset): PickedImage {
-  return {
-    uri: asset.uri,
-    name: asset.fileName || "try-on.jpg",
-    mimeType: asset.mimeType === "image/jpg" ? "image/jpeg" : asset.mimeType || "image/jpeg",
-  };
-}
+const OPTIONS = {
+  presentation: [["FEMININE", "偏女性化"], ["MASCULINE", "偏男性化"], ["NEUTRAL", "中性"]],
+  body_shape: [["BALANCED", "均衡"], ["TRIANGLE", "梨形"], ["INVERTED_TRIANGLE", "倒三角"], ["RECTANGLE", "直筒"], ["OVAL", "椭圆"]],
+  skin_tone: [["LIGHT", "浅"], ["MEDIUM", "中等"], ["TAN", "小麦"], ["DEEP", "深"]],
+  fit_preference: [["CLOSE", "合身"], ["REGULAR", "标准"], ["RELAXED", "宽松"]],
+} as const;
 
 function statusCopy(job: VirtualTryOnJob | null): { title: string; detail: string } {
-  if (job?.status === "QUEUED") return { title: "正在排队准备…", detail: "即将开始生成你的试穿效果。" };
-  if (job?.status === "PROCESSING") return { title: "正在模拟服装细节…", detail: "正在处理面料垂坠、褶皱、遮挡与光影。" };
-  if (job?.status === "FAILED") return { title: "本次生成未完成", detail: "请更换清晰、正面、全身入镜的照片后重试。" };
-  return { title: "准备开始试穿", detail: "效果仅供视觉参考，不代表实际尺码或合身度。" };
+  if (job?.status === "QUEUED") return { title: "虚拟模特正在排队", detail: "即将生成匿名成年模特。" };
+  if (job?.status === "PROCESSING") return { title: "正在生成试穿效果", detail: "正在处理身体比例、服装细节、垂坠与光影。" };
+  if (job?.status === "FAILED") return { title: "本次生成未完成", detail: "请确认参数后重新生成。" };
+  return { title: "参数准备完成", detail: "无需真人照片，效果仅供视觉参考。" };
+}
+
+function MetricField({ label, value, unit, onChange }: { label: string; value: number | undefined; unit: string; onChange: (value: number) => void }) {
+  return <View style={styles.metric}><Text style={styles.metricLabel}>{label}</Text><View style={styles.metricInput}><TextInput value={value === undefined ? "" : String(value)} keyboardType="decimal-pad" onChangeText={(text) => onChange(Number(text.replace(",", ".")) || 0)} style={styles.input} /><Text style={styles.unit}>{unit}</Text></View></View>;
+}
+
+function ChoiceRow<K extends keyof typeof OPTIONS>({ label, kind, value, onChange }: { label: string; kind: K; value: string; onChange: (value: string) => void }) {
+  return <View style={styles.choiceBlock}><Text style={styles.choiceLabel}>{label}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.choices}>{OPTIONS[kind].map(([option, copy]) => <Pressable key={option} onPress={() => onChange(option)} style={[styles.choice, value === option && styles.choiceActive]}><Text style={[styles.choiceText, value === option && styles.choiceTextActive]}>{copy}</Text></Pressable>)}</ScrollView></View>;
+}
+
+function ModelPreview({ profile }: { profile: SyntheticBodyProfile }) {
+  const scale = (value: number) => 44 + Math.min(Math.max(value - 60, 0), 100) * 0.35;
+  const skin = { LIGHT: "#ead3c3", MEDIUM: "#c99772", TAN: "#9b6947", DEEP: "#65412f" }[profile.skin_tone];
+  return <View style={styles.preview}><View style={[styles.head, { backgroundColor: skin }]} /><View style={[styles.chest, { width: scale(profile.chest_cm) }]} /><View style={[styles.waist, { width: scale(profile.waist_cm) }]} /><View style={[styles.hip, { width: scale(profile.hip_cm) }]} /><View style={styles.legs}><View style={styles.leg} /><View style={styles.leg} /></View><View style={styles.previewCaption}><UserRound size={12} color={colors.primary} /><Text style={styles.previewCaptionText}>匿名合成模特 · 不使用真人照片</Text></View></View>;
 }
 
 export default function TryOnScreen() {
@@ -33,81 +59,83 @@ export default function TryOnScreen() {
   const router = useRouter();
   const token = useAppStore((state) => state.accessToken);
   const [product, setProduct] = useState<Product | null>(null);
-  const [photo, setPhoto] = useState<PickedImage | null>(null);
-  const [consented, setConsented] = useState(false);
+  const [profile, setProfile] = useState<SyntheticBodyProfile>(DEFAULT_PROFILE);
   const [job, setJob] = useState<VirtualTryOnJob | null>(null);
+  const [recent, setRecent] = useState<VirtualTryOnJob[]>([]);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   useEffect(() => { if (id) void fetchProduct(id).then(setProduct).catch((cause) => setError(cause instanceof Error ? cause.message : "商品暂时无法加载")); }, [id]);
+  const refreshRecent = useCallback(async () => { if (token) try { setRecent(await listVirtualTryOns(token, 8)); } catch { /* Non-blocking. */ } }, [token]);
   useEffect(() => {
     let active = true;
-    void ImagePicker.getPendingResultAsync().then((result) => {
-      if (!active || !result || !("canceled" in result) || result.canceled || !result.assets?.[0]) return;
-      setPhoto(toPickedImage(result.assets[0]));
-    }).catch(() => undefined);
+    if (token) void listVirtualTryOns(token, 8).then((items) => { if (active) setRecent(items); }).catch(() => undefined);
     return () => { active = false; };
-  }, []);
+  }, [token]);
   useEffect(() => {
-    const jobId = job?.id;
-    const jobStatus = job?.status;
-    const pollAfterSeconds = job?.retry_after_seconds;
-    if (!token || !jobId || !jobStatus || !["QUEUED", "PROCESSING"].includes(jobStatus)) return;
+    if (!token || !job || !["QUEUED", "PROCESSING"].includes(job.status)) return;
     let active = true;
-    const timer = setTimeout(async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let failures = 0;
+    const poll = async () => {
       try {
-        const next = await fetchVirtualTryOn(token, jobId);
-        if (active) setJob(next);
+        const next = await fetchVirtualTryOn(token, job.id);
+        if (!active) return;
+        failures = 0; setJob(next); setError("");
+        if (next.status === "SUCCEEDED") void refreshRecent();
+        if (["QUEUED", "PROCESSING"].includes(next.status)) timer = setTimeout(poll, Math.max(next.retry_after_seconds || 2, 1) * 1000);
       } catch (cause) {
-        if (active) setError(cause instanceof Error ? cause.message : "试穿状态暂时无法获取");
+        if (!active) return;
+        failures += 1; setError(cause instanceof Error ? cause.message : "试穿状态暂时无法获取");
+        timer = setTimeout(poll, Math.min(1000 * 2 ** failures, 15_000));
       }
-    }, Math.max(pollAfterSeconds || 2, 1) * 1000);
-    return () => { active = false; clearTimeout(timer); };
-  }, [token, job?.id, job?.status, job?.retry_after_seconds]);
+    };
+    timer = setTimeout(poll, 700);
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [token, job, refreshRecent]);
 
-  const selectPhoto = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) { Alert.alert("需要照片权限", "请允许访问照片，以选择全身照进行虚拟试穿。"); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 4], quality: 0.92, exif: false });
-    if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const selected = toPickedImage(asset);
-    if (asset.fileSize && asset.fileSize > MAX_IMAGE_BYTES) { setError("照片不能超过 12 MB"); return; }
-    if (!["image/jpeg", "image/png", "image/webp"].includes(selected.mimeType)) { setError("请选择 JPG、PNG 或 WebP 格式的照片"); return; }
-    setPhoto(selected); setJob(null); setError("");
-  };
+  const updateMetric = (key: keyof SyntheticBodyProfile, value: number) => { setProfile((current) => ({ ...current, [key]: value })); setError(""); };
+  const valid = useMemo(() => [profile.height_cm, profile.weight_kg, profile.chest_cm, profile.waist_cm, profile.hip_cm].every((value) => value > 0), [profile]);
+  const busy = job?.status === "QUEUED" || job?.status === "PROCESSING";
+  const copy = statusCopy(job);
 
   const generate = async () => {
     if (!product) return;
     if (!token) { router.push("/auth"); return; }
-    if (!photo || !consented) { setError("请选择照片并确认照片处理说明"); return; }
-    try { setError(""); setJob(await createVirtualTryOn(token, product.article_id, photo)); }
+    if (!valid) { setError("请完整填写身高、体重和三围"); return; }
+    try { setError(""); setNotice(""); setJob(await createVirtualTryOn(token, product.article_id, profile)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "试穿服务暂时不可用，请稍后重试"); }
   };
+  const toggleSave = async () => { if (token && job) try { const next = await saveVirtualTryOn(token, job.id, !job.saved); setJob(next); setNotice(next.saved ? "已保存 7 天" : "已取消保存"); void refreshRecent(); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); } };
+  const share = async () => { if (token && job) try { const url = await shareVirtualTryOn(token, job.id); await Share.share({ message: `${product?.prod_name || "商品"} 虚拟试穿：${url}`, url }); } catch (cause) { setError(cause instanceof Error ? cause.message : "分享失败"); } };
+  const remove = async () => { if (token && job) try { await deleteVirtualTryOn(token, job.id); setJob(null); setNotice("试穿结果已删除"); void refreshRecent(); } catch (cause) { setError(cause instanceof Error ? cause.message : "删除失败"); } };
+  const feedback = async (positive: boolean) => { if (token && job) try { setJob(await feedbackVirtualTryOn(token, job.id, { rating: positive ? 5 : 2, issues: positive ? [] : ["BODY_PROPORTION"] })); setNotice("感谢反馈"); } catch (cause) { setError(cause instanceof Error ? cause.message : "反馈失败"); } };
 
-  if (!product) return <SafeAreaView style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /><Text style={styles.loadingText}>{error || "正在加载试穿服务"}</Text></SafeAreaView>;
-  const busy = job?.status === "QUEUED" || job?.status === "PROCESSING";
-  const status = statusCopy(job);
-  return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header}><Pressable accessibilityLabel="返回商品" onPress={() => router.back()} style={styles.back}><ArrowLeft size={18} color={colors.ink} /></Pressable><View><Text style={styles.eyebrow}>FITME / VIRTUAL TRY-ON</Text><Text style={styles.headerTitle}>AI 虚拟试穿</Text></View></View>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.intro}><Sparkles size={18} color={colors.primary} /><View><Text style={styles.introTitle}>{product.prod_name}</Text><Text style={styles.introText}>上传清晰全身照，预览服装在你身上的视觉效果。</Text></View></View>
-        <View style={styles.guide}><Camera size={16} color={colors.primary} /><Text style={styles.guideText}>建议在自然光下正面站立，头到脚完整入镜；避免镜面、强遮挡和多人照片。</Text></View>
-        <View style={styles.stage}>
-          <Pressable accessibilityLabel="选择全身照" onPress={() => void selectPhoto()} disabled={busy} style={styles.photoSlot}>
-            {photo ? <Image source={{ uri: photo.uri }} style={styles.stageImage} contentFit="cover" /> : <><ImagePlus size={27} color={colors.primary} /><Text style={styles.slotTitle}>选择全身照</Text><Text style={styles.slotText}>JPG · PNG · WebP</Text></>}
-          </Pressable>
-          {job?.status === "SUCCEEDED" && job.result?.url ? <View style={styles.resultSlot}><Image source={{ uri: assetUrl(job.result.url) }} style={styles.stageImage} contentFit="cover" /><View style={styles.successBadge}><CheckCircle2 size={12} color={colors.white} /><Text style={styles.successText}>已生成</Text></View></View> : <View style={styles.statusSlot}>{busy ? <LoaderCircle size={27} color={colors.primary} /> : job?.status === "FAILED" ? <TriangleAlert size={27} color={colors.error} /> : <Sparkles size={27} color={colors.primary} />}<Text style={styles.statusTitle}>{status.title}</Text><Text style={styles.statusText}>{status.detail}</Text></View>}
-        </View>
-        {job?.photo_quality.warnings.map((warning) => <Text key={warning} style={styles.warning}>• {warning}</Text>)}
-        <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: consented }} onPress={() => setConsented((value) => !value)} style={styles.consent}><View style={[styles.checkbox, consented && styles.checkboxChecked]}>{consented && <CheckCircle2 size={12} color={colors.white} />}</View><Text style={styles.consentText}>我确认已获得照片中人物授权；原始上传照片仅用于本次生成，完成后自动删除，结果将在 24 小时后删除。</Text></Pressable>
-        {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
-        <Pressable onPress={() => void generate()} disabled={!photo || !consented || busy} style={[styles.generate, (!photo || !consented || busy) && styles.generateDisabled]}>{busy ? <LoaderCircle size={17} color={colors.white} /> : job?.status === "FAILED" ? <RefreshCw size={17} color={colors.white} /> : <Sparkles size={17} color={colors.white} />}<Text style={styles.generateText}>{busy ? "正在生成" : job?.status === "FAILED" ? "重新生成" : "开始试穿"}</Text></Pressable>
-      </ScrollView>
-    </SafeAreaView>
-  );
+  if (!product) return <SafeAreaView style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /><Text style={styles.error}>{error}</Text></SafeAreaView>;
+  return <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+    <View style={styles.header}><Pressable accessibilityLabel="返回商品" onPress={() => router.back()} style={styles.back}><ArrowLeft size={18} color={colors.ink} /></Pressable><View><Text style={styles.eyebrow}>SYNTHETIC MODEL / TRY-ON</Text><Text style={styles.headerTitle}>AI 虚拟模特试穿</Text></View></View>
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+      <Text style={styles.intro}>输入身体参数生成匿名成年模特，无需上传真人照片。</Text>
+      <ModelPreview profile={profile} />
+      <View style={styles.metrics}><MetricField label="身高" value={profile.height_cm} unit="cm" onChange={(value) => updateMetric("height_cm", value)} /><MetricField label="体重" value={profile.weight_kg} unit="kg" onChange={(value) => updateMetric("weight_kg", value)} /><MetricField label="胸围" value={profile.chest_cm} unit="cm" onChange={(value) => updateMetric("chest_cm", value)} /><MetricField label="腰围" value={profile.waist_cm} unit="cm" onChange={(value) => updateMetric("waist_cm", value)} /><MetricField label="臀围" value={profile.hip_cm} unit="cm" onChange={(value) => updateMetric("hip_cm", value)} /><MetricField label="肩宽" value={profile.shoulder_cm} unit="cm" onChange={(value) => updateMetric("shoulder_cm", value)} /></View>
+      <ChoiceRow label="模特呈现" kind="presentation" value={profile.presentation} onChange={(value) => setProfile({ ...profile, presentation: value as SyntheticBodyProfile["presentation"] })} />
+      <ChoiceRow label="体型" kind="body_shape" value={profile.body_shape} onChange={(value) => setProfile({ ...profile, body_shape: value as SyntheticBodyProfile["body_shape"] })} />
+      <ChoiceRow label="肤色" kind="skin_tone" value={profile.skin_tone} onChange={(value) => setProfile({ ...profile, skin_tone: value as SyntheticBodyProfile["skin_tone"] })} />
+      <ChoiceRow label="穿着偏好" kind="fit_preference" value={profile.fit_preference} onChange={(value) => setProfile({ ...profile, fit_preference: value as SyntheticBodyProfile["fit_preference"] })} />
+      {job?.status === "SUCCEEDED" && job.result?.url ? <View style={styles.result}><Image source={{ uri: assetUrl(job.result.url) }} style={styles.resultImage} contentFit="contain" transition={220} /><View style={styles.resultBadge}><CheckCircle2 size={13} color={colors.white} /><Text>AI 合成模特 · 不代表真实尺码</Text></View></View> : <View style={styles.status}>{busy ? <LoaderCircle size={24} color={colors.primary} /> : <Sparkles size={24} color={colors.primary} />}<Text style={styles.statusTitle}>{copy.title}</Text><Text style={styles.statusDetail}>{copy.detail}</Text></View>}
+      {job?.status === "SUCCEEDED" && <View style={styles.actions}><Pressable onPress={() => void toggleSave()} style={styles.action}><Heart size={17} color={colors.primary} fill={job.saved ? colors.primary : "transparent"} /><Text style={styles.actionText}>{job.saved ? "已保存" : "保存"}</Text></Pressable><Pressable onPress={() => void share()} style={styles.action}><Share2 size={17} color={colors.primary} /><Text style={styles.actionText}>分享</Text></Pressable><Pressable onPress={() => void feedback(true)} style={styles.action}><ThumbsUp size={17} color={colors.primary} /><Text style={styles.actionText}>准确</Text></Pressable><Pressable onPress={() => void feedback(false)} style={styles.action}><ThumbsDown size={17} color={colors.primary} /><Text style={styles.actionText}>需改进</Text></Pressable><Pressable onPress={() => void remove()} style={styles.action}><Trash2 size={17} color={colors.error} /><Text style={styles.actionText}>删除</Text></Pressable></View>}
+      <Text style={styles.privacy}>仅处理身体参数并生成匿名成年模特；未保存结果 24 小时后删除。</Text>
+      {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}{!!notice && <Text style={styles.notice}>{notice}</Text>}
+      <Pressable disabled={!valid || busy} onPress={() => void generate()} style={[styles.generate, (!valid || busy) && styles.disabled]}>{busy ? <LoaderCircle size={17} color={colors.white} /> : job?.status === "FAILED" ? <RefreshCw size={17} color={colors.white} /> : <Sparkles size={17} color={colors.white} />}<Text style={styles.generateText}>{busy ? "生成中" : job?.status === "FAILED" ? "重新生成" : "生成虚拟模特并试穿"}</Text></Pressable>
+      {recent.some((item) => item.status === "SUCCEEDED" && item.result?.url) && <View style={styles.recent}><Text style={styles.recentTitle}>最近试穿</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recentRow}>{recent.filter((item) => item.status === "SUCCEEDED" && item.result?.url).map((item) => <Pressable key={item.id} onPress={() => setJob(item)} style={styles.recentItem}><Image source={{ uri: assetUrl(item.result!.url) }} style={styles.recentImage} contentFit="cover" /><Text>{item.saved ? "已保存" : "24 小时"}</Text></Pressable>)}</ScrollView></View>}
+    </ScrollView>
+  </SafeAreaView>;
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.background }, loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, backgroundColor: colors.background }, loadingText: { color: colors.muted, fontSize: 12 }, header: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.line, backgroundColor: colors.surface }, back: { width: 38, height: 38, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill }, eyebrow: { color: colors.primary, fontFamily: type.mono, fontSize: 8, fontWeight: "800", letterSpacing: 1 }, headerTitle: { marginTop: 3, color: colors.ink, fontFamily: type.serif, fontSize: 22 }, content: { padding: 16, paddingBottom: 38 }, intro: { flexDirection: "row", gap: 10, alignItems: "flex-start", padding: 15, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface }, introTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" }, introText: { marginTop: 5, color: colors.muted, fontSize: 11, lineHeight: 16 }, guide: { flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 12, padding: 13, borderRadius: radius.md, backgroundColor: colors.primaryPale }, guideText: { flex: 1, color: colors.primaryDark, fontSize: 11, lineHeight: 16 }, stage: { flexDirection: "row", gap: 10, minHeight: 250, marginTop: 14 }, photoSlot: { flex: 1, alignItems: "center", justifyContent: "center", overflow: "hidden", borderWidth: 1, borderStyle: "dashed", borderColor: "#BBAEC0", borderRadius: radius.lg, backgroundColor: colors.surface }, resultSlot: { flex: 1, overflow: "hidden", borderRadius: radius.lg, backgroundColor: colors.surfaceSoft }, stageImage: { width: "100%", height: "100%" }, slotTitle: { marginTop: 9, color: colors.primary, fontSize: 11, fontWeight: "800" }, slotText: { marginTop: 4, color: colors.muted, fontSize: 8 }, statusSlot: { flex: 1, alignItems: "flex-start", justifyContent: "center", gap: 9, padding: 16, borderRadius: radius.lg, backgroundColor: "#F1EDF3" }, statusTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" }, statusText: { color: colors.muted, fontSize: 10, lineHeight: 15 }, successBadge: { position: "absolute", right: 8, bottom: 8, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: radius.sm, backgroundColor: "rgba(25,23,22,.72)" }, successText: { color: colors.white, fontSize: 9, fontWeight: "700" }, warning: { marginTop: 8, color: "#806343", fontSize: 10, lineHeight: 14 }, consent: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 17 }, checkbox: { width: 17, height: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#AAA1AF", borderRadius: 4, backgroundColor: colors.white }, checkboxChecked: { borderColor: colors.primary, backgroundColor: colors.primary }, consentText: { flex: 1, color: colors.muted, fontSize: 10, lineHeight: 15 }, error: { marginTop: 10, color: colors.error, fontSize: 11 }, generate: { height: 47, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 18, borderRadius: radius.md, backgroundColor: colors.primary }, generateDisabled: { opacity: 0.48 }, generateText: { color: colors.white, fontSize: 13, fontWeight: "800" },
+  safe: { flex: 1, backgroundColor: colors.background }, loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.background }, header: { height: 66, paddingHorizontal: 16, flexDirection: "row", gap: 12, alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.line, backgroundColor: colors.surface }, back: { width: 38, height: 38, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, borderRadius: 19 }, eyebrow: { color: colors.primary, fontFamily: type.mono, fontSize: 8, fontWeight: "800" }, headerTitle: { marginTop: 3, color: colors.ink, fontSize: 18, fontWeight: "800" }, content: { padding: 16, paddingBottom: 40 }, intro: { color: colors.muted, fontSize: 12, lineHeight: 19 },
+  preview: { height: 290, marginTop: 14, alignItems: "center", justifyContent: "center", overflow: "hidden", borderWidth: 1, borderColor: colors.line, borderRadius: radius.xl, backgroundColor: colors.surfaceSoft }, head: { width: 50, height: 50, borderRadius: 25 }, chest: { height: 62, marginTop: 5, borderTopLeftRadius: 24, borderTopRightRadius: 24, backgroundColor: "#73627a" }, waist: { height: 48, backgroundColor: "#87738e" }, hip: { height: 50, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, backgroundColor: "#9f88a6" }, legs: { height: 57, flexDirection: "row", gap: 9 }, leg: { width: 15, height: 55, borderBottomLeftRadius: 7, borderBottomRightRadius: 7, backgroundColor: "#78677f" }, previewCaption: { position: "absolute", bottom: 10, flexDirection: "row", gap: 5, alignItems: "center" }, previewCaptionText: { color: colors.primary, fontSize: 9 },
+  metrics: { marginTop: 14, flexDirection: "row", flexWrap: "wrap", gap: 8 }, metric: { width: "48%", gap: 5 }, metricLabel: { color: colors.muted, fontSize: 10 }, metricInput: { height: 42, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface }, input: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "700" }, unit: { color: colors.muted, fontSize: 9 }, choiceBlock: { marginTop: 13 }, choiceLabel: { marginBottom: 6, color: colors.muted, fontSize: 10 }, choices: { gap: 6 }, choice: { minHeight: 34, paddingHorizontal: 12, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, borderRadius: 17, backgroundColor: colors.surface }, choiceActive: { borderColor: colors.primary, backgroundColor: colors.primaryPale }, choiceText: { color: colors.muted, fontSize: 10 }, choiceTextActive: { color: colors.primary, fontWeight: "800" },
+  status: { minHeight: 130, marginTop: 15, padding: 18, alignItems: "center", justifyContent: "center", borderRadius: radius.xl, backgroundColor: colors.surfaceSoft }, statusTitle: { marginTop: 9, color: colors.ink, fontSize: 14, fontWeight: "800" }, statusDetail: { marginTop: 5, color: colors.muted, fontSize: 10, textAlign: "center" }, result: { minHeight: 360, marginTop: 15, overflow: "hidden", borderRadius: radius.xl, backgroundColor: colors.surfaceSoft }, resultImage: { width: "100%", height: 420 }, resultBadge: { position: "absolute", right: 9, bottom: 9, padding: 7, flexDirection: "row", gap: 5, alignItems: "center", borderRadius: radius.sm, backgroundColor: "rgba(20,18,22,.72)" },
+  actions: { marginTop: 9, flexDirection: "row", justifyContent: "space-between", gap: 5 }, action: { minWidth: 52, minHeight: 48, paddingHorizontal: 5, alignItems: "center", justifyContent: "center", gap: 3, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, backgroundColor: colors.surface }, actionText: { color: colors.muted, fontSize: 8 }, privacy: { marginTop: 12, color: colors.muted, fontSize: 9, lineHeight: 15 }, error: { marginTop: 9, color: colors.error, fontSize: 10 }, notice: { marginTop: 9, color: colors.success, fontSize: 10 }, generate: { height: 48, marginTop: 12, flexDirection: "row", gap: 7, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.primary }, generateText: { color: colors.white, fontSize: 12, fontWeight: "800" }, disabled: { opacity: 0.48 }, recent: { marginTop: 20 }, recentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" }, recentRow: { gap: 8, paddingTop: 9 }, recentItem: { width: 88, overflow: "hidden", borderRadius: radius.md, backgroundColor: colors.surface }, recentImage: { width: 88, height: 104 },
 });

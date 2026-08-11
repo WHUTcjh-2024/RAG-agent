@@ -7,7 +7,12 @@ import {
   cancelOrder,
   createVirtualTryOn,
   createOrder,
+  deleteVirtualTryOn,
+  feedbackVirtualTryOn,
   fetchVirtualTryOn,
+  listVirtualTryOns,
+  saveVirtualTryOn,
+  shareVirtualTryOn,
   updateCartQuantity,
   fetchOrderDetail,
   fetchOrders,
@@ -234,7 +239,12 @@ describe("buildProductQuery", () => {
 });
 
 describe("virtual try-on APIs", () => {
-  it("uploads consented photos with an idempotency key and polls with authorization", async () => {
+  it("submits a synthetic body profile with an idempotency key and polls with authorization", async () => {
+    const bodyProfile = {
+      height_cm: 168, weight_kg: 58, chest_cm: 88, waist_cm: 70, hip_cm: 94,
+      shoulder_cm: 40, inseam_cm: 76, presentation: "NEUTRAL" as const,
+      body_shape: "BALANCED" as const, skin_tone: "MEDIUM" as const, fit_preference: "REGULAR" as const
+    };
     const job = {
       id: "try-on-1",
       product_id: "product-1",
@@ -245,17 +255,16 @@ describe("virtual try-on APIs", () => {
       expires_at: "2026-08-11T00:00:00Z",
       retry_after_seconds: 2,
       attempt_count: 0,
-      photo_quality: { score: 100, warnings: [] },
+      model: { kind: "SYNTHETIC_ADULT", body_profile: bodyProfile, uses_person_photo: false },
       result: null,
-      failure: null
+      failure: null,
+      saved: false,
+      feedback: null
     };
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/try-on/jobs") {
-        expect(init?.headers).toEqual({ Authorization: "Bearer token-123", "Idempotency-Key": "try-on-key-123" });
-        const form = init?.body as FormData;
-        expect(form.get("product_id")).toBe("product-1");
-        expect(form.get("consent")).toBe("true");
-        expect(form.get("person_image")).toBeInstanceOf(File);
+        expect(init?.headers).toEqual({ Authorization: "Bearer token-123", "Content-Type": "application/json", "Idempotency-Key": "try-on-key-123" });
+        expect(JSON.parse(String(init?.body))).toEqual({ product_id: "product-1", body_profile: bodyProfile });
       } else {
         expect(url).toBe("/api/try-on/jobs/try-on-1");
         expect(init?.headers).toEqual({ Authorization: "Bearer token-123" });
@@ -263,10 +272,28 @@ describe("virtual try-on APIs", () => {
       return new Response(JSON.stringify(job), { status: 202, headers: { "Content-Type": "application/json" } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const photo = new File(["photo"], "portrait.jpg", { type: "image/jpeg" });
-
-    await expect(createVirtualTryOn("token-123", "product-1", photo, "try-on-key-123")).resolves.toEqual(job);
+    await expect(createVirtualTryOn("token-123", "product-1", bodyProfile, "try-on-key-123")).resolves.toEqual(job);
     await expect(fetchVirtualTryOn("token-123", "try-on-1")).resolves.toEqual(job);
+  });
+
+  it("supports recent results, save, share, feedback and delete", async () => {
+    const job = { id: "try-on-1", status: "SUCCEEDED", saved: false };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer token-123" });
+      if (url === "/api/try-on/jobs?limit=8") return new Response(JSON.stringify({ items: [job] }), { status: 200 });
+      if (url.endsWith("/save")) return new Response(JSON.stringify({ ...job, saved: true }), { status: 200 });
+      if (url.endsWith("/share")) return new Response(JSON.stringify({ url: "/api/try-on/shared" }), { status: 200 });
+      if (url.endsWith("/feedback")) return new Response(JSON.stringify({ ...job, feedback: { rating: 5, issues: [] } }), { status: 200 });
+      expect(init?.method).toBe("DELETE");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listVirtualTryOns("token-123", 8)).resolves.toEqual([job]);
+    await expect(saveVirtualTryOn("token-123", "try-on-1", true)).resolves.toMatchObject({ saved: true });
+    await expect(shareVirtualTryOn("token-123", "try-on-1")).resolves.toBe("/api/try-on/shared");
+    await expect(feedbackVirtualTryOn("token-123", "try-on-1", { rating: 5, issues: [] })).resolves.toMatchObject({ feedback: { rating: 5, issues: [] } });
+    await expect(deleteVirtualTryOn("token-123", "try-on-1")).resolves.toBeUndefined();
   });
 });
 

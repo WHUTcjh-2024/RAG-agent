@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from functools import lru_cache
-from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.virtual_try_on import (
+    SyntheticBodyProfile,
     TryOnError,
     TryOnJob,
     VirtualTryOnService,
-    VirtualTryOnSettings,
+    build_virtual_try_on_service,
     load_catalog_product,
-    prepare_person_image,
     validate_idempotency_key,
 )
 
@@ -23,14 +24,56 @@ router = APIRouter(tags=["virtual-try-on"])
 _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
 
 
-def _normalized_mime(value: str | None) -> str | None:
-    mime_type = (value or "").strip().casefold()
-    return "image/jpeg" if mime_type == "image/jpg" else mime_type or None
+class BodyProfileRequest(BaseModel):
+    height_cm: float = Field(ge=135, le=220)
+    weight_kg: float = Field(ge=30, le=220)
+    chest_cm: float = Field(ge=60, le=170)
+    waist_cm: float = Field(ge=45, le=180)
+    hip_cm: float = Field(ge=60, le=180)
+    shoulder_cm: float | None = Field(default=None, ge=28, le=70)
+    inseam_cm: float | None = Field(default=None, ge=45, le=120)
+    presentation: Literal["FEMININE", "MASCULINE", "NEUTRAL"] = "NEUTRAL"
+    body_shape: Literal["BALANCED", "TRIANGLE", "INVERTED_TRIANGLE", "RECTANGLE", "OVAL"] = "BALANCED"
+    skin_tone: Literal["LIGHT", "MEDIUM", "TAN", "DEEP"] = "MEDIUM"
+    fit_preference: Literal["CLOSE", "REGULAR", "RELAXED"] = "REGULAR"
+
+    @model_validator(mode="after")
+    def validate_proportions(self) -> BodyProfileRequest:
+        bmi = self.weight_kg / ((self.height_cm / 100) ** 2)
+        if bmi < 10 or bmi > 70:
+            raise ValueError("身高和体重组合超出可生成范围")
+        return self
+
+    def to_domain(self) -> SyntheticBodyProfile:
+        return SyntheticBodyProfile.from_dict(self.model_dump())
+
+
+class CreateTryOnRequest(BaseModel):
+    product_id: str = Field(min_length=1, max_length=100)
+    body_profile: BodyProfileRequest
+
+
+class SaveTryOnRequest(BaseModel):
+    saved: bool = True
+
+
+class FeedbackRequest(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    issues: list[
+        Literal[
+            "BODY_PROPORTION",
+            "GARMENT_DETAIL",
+            "MATERIAL",
+            "COLOR",
+            "OCCLUSION",
+            "OTHER",
+        ]
+    ] = Field(default_factory=list, max_length=5)
 
 
 @lru_cache(maxsize=1)
 def get_try_on_service() -> VirtualTryOnService:
-    return VirtualTryOnService(VirtualTryOnSettings.from_env())
+    return build_virtual_try_on_service()
 
 
 def _trusted_user_id(request: Request) -> str:
@@ -39,7 +82,7 @@ def _trusted_user_id(request: Request) -> str:
     ).strip()
     user_id = request.headers.get("X-Trusted-User-Id", "").strip()
     if not expected_token or not user_id or request.headers.get(_CONTEXT_TOKEN_HEADER) != expected_token:
-        raise HTTPException(status_code=401, detail="Please sign in to use virtual try-on.")
+        raise HTTPException(status_code=401, detail="请登录后使用虚拟试穿。")
     return user_id
 
 
@@ -67,56 +110,61 @@ def _job_payload(service: VirtualTryOnService, job: TryOnJob) -> dict[str, objec
         "expires_at": job.expires_at,
         "retry_after_seconds": 2 if job.status in {"QUEUED", "PROCESSING"} else None,
         "attempt_count": job.attempt_count,
-        "photo_quality": {
-            "score": job.quality_score,
-            "warnings": list(job.quality_warnings),
+        "model": {
+            "kind": "SYNTHETIC_ADULT",
+            "body_profile": job.body_profile.to_dict(),
+            "uses_person_photo": False,
         },
         "result": {"url": result_url} if result_url else None,
         "failure": {"code": job.failure_code} if job.status == "FAILED" else None,
+        "saved": job.saved,
+        "feedback": json.loads(job.feedback) if job.feedback else None,
     }
 
 
 @router.post("/try-on/jobs", status_code=202)
 async def create_try_on_job(
+    payload: CreateTryOnRequest,
     request: Request,
-    product_id: str = Form(..., min_length=1, max_length=100),
-    person_image: UploadFile = File(...),
-    consent: bool = Form(...),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> JSONResponse:
+) -> Response:
     user_id = _trusted_user_id(request)
-    if not consent:
-        raise HTTPException(
-            status_code=422,
-            detail="Consent is required before processing a personal photo.",
-        )
     service = get_try_on_service()
     if not service.configured:
-        raise HTTPException(status_code=503, detail="Virtual try-on has not been configured.")
+        raise HTTPException(status_code=503, detail="当前环境尚未配置虚拟模特生成服务。")
     try:
         normalized_key = validate_idempotency_key(idempotency_key)
         if normalized_key:
             existing = service.store.find_idempotent(user_id, normalized_key)
             if existing is not None:
-                return JSONResponse(status_code=200, content=_job_payload(service, existing))
-        content = await person_image.read(12 * 1024 * 1024 + 1)
-        assessment = prepare_person_image(content, _normalized_mime(person_image.content_type))
-        product = await asyncio.to_thread(load_catalog_product, product_id.strip())
+                return _json_response(200, _job_payload(service, existing))
+        product = await asyncio.to_thread(load_catalog_product, payload.product_id.strip())
         job, created = service.submit(
             user_id=user_id,
             product=product,
-            assessment=assessment,
+            body_profile=payload.body_profile.to_domain(),
             idempotency_key=normalized_key,
         )
     except TryOnError as error:
         _raise_try_on_error(error)
     if created:
-        service.schedule(job.id, product)
-    return JSONResponse(
-        status_code=202 if created else 200,
-        content=_job_payload(service, job),
-        headers={"Retry-After": "2"} if created else {},
+        await service.dispatch(job.id)
+    return _json_response(
+        202 if created else 200,
+        _job_payload(service, job),
+        headers={"Retry-After": "2"} if created else None,
     )
+
+
+@router.get("/try-on/jobs")
+def list_try_on_jobs(
+    request: Request,
+    limit: int = Query(default=12, ge=1, le=50),
+) -> dict[str, object]:
+    user_id = _trusted_user_id(request)
+    service = get_try_on_service()
+    service.cleanup_if_due()
+    return {"items": [_job_payload(service, job) for job in service.store.list_user(user_id, limit)]}
 
 
 @router.get("/try-on/jobs/{job_id}")
@@ -126,8 +174,49 @@ def get_try_on_job(job_id: str, request: Request) -> dict[str, object]:
     service.cleanup_if_due()
     job = service.store.get(job_id, user_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Virtual try-on job was not found.")
+        raise HTTPException(status_code=404, detail="未找到该试穿任务。")
     return _job_payload(service, job)
+
+
+@router.post("/try-on/jobs/{job_id}/save")
+def save_try_on_job(job_id: str, payload: SaveTryOnRequest, request: Request) -> dict[str, object]:
+    user_id = _trusted_user_id(request)
+    service = get_try_on_service()
+    ttl = service.settings.saved_result_ttl_hours if payload.saved else service.settings.result_ttl_hours
+    job = service.store.set_saved(job_id, user_id, payload.saved, ttl)
+    if job is None:
+        raise HTTPException(status_code=404, detail="未找到可保存的试穿结果。")
+    return _job_payload(service, job)
+
+
+@router.post("/try-on/jobs/{job_id}/feedback")
+def feedback_try_on_job(job_id: str, payload: FeedbackRequest, request: Request) -> dict[str, object]:
+    user_id = _trusted_user_id(request)
+    service = get_try_on_service()
+    feedback = json.dumps(payload.model_dump(), separators=(",", ":"))
+    job = service.store.set_feedback(job_id, user_id, feedback)
+    if job is None:
+        raise HTTPException(status_code=404, detail="未找到该试穿结果。")
+    return _job_payload(service, job)
+
+
+@router.post("/try-on/jobs/{job_id}/share")
+def share_try_on_job(job_id: str, request: Request) -> dict[str, str]:
+    user_id = _trusted_user_id(request)
+    service = get_try_on_service()
+    job = service.store.get(job_id, user_id)
+    url = service.sign_result_url(job) if job else None
+    if not url:
+        raise HTTPException(status_code=404, detail="未找到可分享的试穿结果。")
+    return {"url": url}
+
+
+@router.delete("/try-on/jobs/{job_id}", status_code=204)
+def delete_try_on_job(job_id: str, request: Request) -> Response:
+    user_id = _trusted_user_id(request)
+    if not get_try_on_service().delete(job_id, user_id):
+        raise HTTPException(status_code=404, detail="未找到该试穿结果。")
+    return Response(status_code=204)
 
 
 @router.get("/try-on/jobs/{job_id}/result")
@@ -135,21 +224,33 @@ def get_try_on_result(
     job_id: str,
     expires: int = Query(..., ge=0),
     signature: str = Query(..., min_length=32, max_length=128),
-) -> FileResponse:
+) -> Response:
     service = get_try_on_service()
     service.cleanup_if_due()
     job = service.store.get_unscoped(job_id)
     if job is None or not service.verify_result_signature(job, expires, signature):
-        raise HTTPException(status_code=404, detail="Virtual try-on result was not found.")
-    path = Path(job.output_path or "")
-    if job.status != "SUCCEEDED" or not path.is_file():
-        raise HTTPException(status_code=404, detail="Virtual try-on result was not found.")
-    return FileResponse(
-        path,
+        raise HTTPException(status_code=404, detail="未找到该试穿结果。")
+    if job.status != "SUCCEEDED" or not job.output_key:
+        raise HTTPException(status_code=404, detail="未找到该试穿结果。")
+    content = service.media_store.read(job.output_key)
+    if content is None:
+        raise HTTPException(status_code=404, detail="未找到该试穿结果。")
+    return Response(
+        content=content,
         media_type="image/jpeg",
         headers={
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
+            "X-AI-Generated": "synthetic-virtual-model",
         },
+    )
+
+
+def _json_response(status_code: int, content: dict[str, object], headers: dict[str, str] | None = None) -> Response:
+    return Response(
+        content=json.dumps(content, ensure_ascii=False),
+        status_code=status_code,
+        media_type="application/json",
+        headers=headers,
     )
