@@ -1,6 +1,7 @@
 import { fetch } from "expo/fetch";
 import * as Crypto from "expo-crypto";
-import type { AgentNodeEvent, AgentPhase, AuthResult, CartItem, DecisionCard, DecisionEvidence, PendingCartAction, PickedImage, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, VirtualTryOnJob, WardrobePlan, WardrobeSnapshot } from "@/types";
+import type { AgentNodeEvent, AgentPhase, AuthResult, CartItem, DecisionCard, DecisionEvidence, PendingCartAction, PickedImage, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "@/types";
+import type { SyntheticBodyProfile, TryOnFeedback, VirtualTryOnJob } from "@/types/try-on";
 import { apiUrl, assetUrl } from "@/config/environment";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
@@ -61,20 +62,37 @@ export async function fetchProducts(query: ProductQuery = {}): Promise<ProductPa
 
 export const fetchProduct = async (id: string) => (await ensureOk(await fetch(apiUrl(`/api/products/${encodeURIComponent(id)}`)))).json() as Promise<Product>;
 export const fetchFacets = async () => (await ensureOk(await fetch(apiUrl("/api/products/facets")))).json() as Promise<ProductFacets>;
-export async function createVirtualTryOn(token: string, productId: string, image: PickedImage, idempotencyKey = Crypto.randomUUID()): Promise<VirtualTryOnJob> {
-  const form = new FormData();
-  form.append("product_id", productId);
-  form.append("person_image", { uri: image.uri, name: image.name, type: image.mimeType } as unknown as Blob);
-  form.append("consent", "true");
+export async function createVirtualTryOn(token: string, productId: string, bodyProfile: SyntheticBodyProfile, idempotencyKey = Crypto.randomUUID()): Promise<VirtualTryOnJob> {
   return (await ensureOk(await fetch(apiUrl("/api/try-on/jobs"), {
     method: "POST",
-    headers: { ...authorized(token), "Idempotency-Key": idempotencyKey },
-    body: form,
+    headers: { ...authorized(token), "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ product_id: productId, body_profile: bodyProfile }),
   }))).json() as Promise<VirtualTryOnJob>;
 }
 export const fetchVirtualTryOn = async (token: string, jobId: string) => (
   await ensureOk(await fetch(apiUrl(`/api/try-on/jobs/${encodeURIComponent(jobId)}`), { headers: authorized(token) }))
 ).json() as Promise<VirtualTryOnJob>;
+export async function listVirtualTryOns(token: string, limit = 12): Promise<VirtualTryOnJob[]> {
+  const payload = await (await ensureOk(await fetch(apiUrl(`/api/try-on/jobs?limit=${limit}`), { headers: authorized(token) }))).json() as { items: VirtualTryOnJob[] };
+  return payload.items;
+}
+export const saveVirtualTryOn = async (token: string, jobId: string, saved: boolean) => (
+  await ensureOk(await fetch(apiUrl(`/api/try-on/jobs/${encodeURIComponent(jobId)}/save`), {
+    method: "POST", headers: { ...authorized(token), "Content-Type": "application/json" }, body: JSON.stringify({ saved })
+  }))
+).json() as Promise<VirtualTryOnJob>;
+export async function shareVirtualTryOn(token: string, jobId: string): Promise<string> {
+  const payload = await (await ensureOk(await fetch(apiUrl(`/api/try-on/jobs/${encodeURIComponent(jobId)}/share`), { method: "POST", headers: authorized(token) }))).json() as { url: string };
+  return apiUrl(payload.url);
+}
+export const feedbackVirtualTryOn = async (token: string, jobId: string, feedback: TryOnFeedback) => (
+  await ensureOk(await fetch(apiUrl(`/api/try-on/jobs/${encodeURIComponent(jobId)}/feedback`), {
+    method: "POST", headers: { ...authorized(token), "Content-Type": "application/json" }, body: JSON.stringify(feedback)
+  }))
+).json() as Promise<VirtualTryOnJob>;
+export async function deleteVirtualTryOn(token: string, jobId: string): Promise<void> {
+  await ensureOk(await fetch(apiUrl(`/api/try-on/jobs/${encodeURIComponent(jobId)}`), { method: "DELETE", headers: authorized(token) }));
+}
 export const compareProducts = (ids: string[]) => postJson<{ products: Product[] }>("/api/compare", { product_ids: ids });
 export const fetchSession = (id: string) => postJson<{ session_id: string; slots: Slots; history: { role: "user" | "assistant"; content: string }[] }>("/api/session", { session_id: id });
 export const login = (email: string, password: string) => postJson<AuthResult>("/api/auth/login", { email, password });

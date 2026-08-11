@@ -1,4 +1,5 @@
-import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, OrderDetail, OrderSummary, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, VirtualTryOnJob, WardrobePlan, WardrobeSnapshot } from "../types";
+import type { AgentErrorPayload, AgentNodeEvent, AgentPhase, AgentStatusEvent, AuthResult, CartItem, DecisionCard, DecisionEvidence, OrderDetail, OrderSummary, PendingCartAction, Product, ProductFacets, ProductPage, ProductQuery, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
+import type { SyntheticBodyProfile, TryOnFeedback, VirtualTryOnJob } from "../try-on-types";
 import { createClientId } from "../utils/clientId";
 
 const REQUEST_ID_HEADER = "X-Request-Id";
@@ -119,17 +120,13 @@ export async function fetchFacets(): Promise<ProductFacets> {
 export async function createVirtualTryOn(
   token: string,
   productId: string,
-  personImage: File,
+  bodyProfile: SyntheticBodyProfile,
   idempotencyKey = createClientId()
 ): Promise<VirtualTryOnJob> {
-  const form = new FormData();
-  form.append("product_id", productId);
-  form.append("person_image", personImage, personImage.name || "try-on.jpg");
-  form.append("consent", "true");
   const response = await ensureOk(await fetch("/api/try-on/jobs", {
     method: "POST",
-    headers: { ...authorized(token), "Idempotency-Key": idempotencyKey },
-    body: form
+    headers: { ...authorized(token), "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ product_id: productId, body_profile: bodyProfile })
   }));
   return response.json();
 }
@@ -138,6 +135,44 @@ export async function fetchVirtualTryOn(token: string, jobId: string): Promise<V
   return (await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}`, {
     headers: authorized(token)
   }))).json();
+}
+
+export async function listVirtualTryOns(token: string, limit = 12): Promise<VirtualTryOnJob[]> {
+  const payload = await (await ensureOk(await fetch(`/api/try-on/jobs?limit=${limit}`, {
+    headers: authorized(token)
+  }))).json() as { items: VirtualTryOnJob[] };
+  return payload.items;
+}
+
+export async function saveVirtualTryOn(token: string, jobId: string, saved: boolean): Promise<VirtualTryOnJob> {
+  return (await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}/save`, {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ saved })
+  }))).json();
+}
+
+export async function shareVirtualTryOn(token: string, jobId: string): Promise<string> {
+  const payload = await (await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}/share`, {
+    method: "POST",
+    headers: authorized(token)
+  }))).json() as { url: string };
+  return payload.url;
+}
+
+export async function feedbackVirtualTryOn(token: string, jobId: string, feedback: TryOnFeedback): Promise<VirtualTryOnJob> {
+  return (await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}/feedback`, {
+    method: "POST",
+    headers: { ...authorized(token), "Content-Type": "application/json" },
+    body: JSON.stringify(feedback)
+  }))).json();
+}
+
+export async function deleteVirtualTryOn(token: string, jobId: string): Promise<void> {
+  await ensureOk(await fetch(`/api/try-on/jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+    headers: authorized(token)
+  }));
 }
 
 type StreamHandlers = {

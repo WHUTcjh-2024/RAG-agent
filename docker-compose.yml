@@ -19,6 +19,18 @@ services:
       VTO_PROVIDER_URL: ${VTO_PROVIDER_URL:-}
       VTO_PROVIDER_API_KEY: ${VTO_PROVIDER_API_KEY:-}
       VTO_RESULT_SIGNING_SECRET: ${VTO_RESULT_SIGNING_SECRET:-}
+      VTO_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      VTO_REDIS_PREFIX: fitme:vto
+      VTO_S3_ENDPOINT_URL: http://minio:9000
+      VTO_S3_BUCKET: ${MINIO_BUCKET:-fitme-tryon}
+      VTO_S3_REGION: us-east-1
+      VTO_S3_ACCESS_KEY: ${MINIO_ROOT_USER:?请设置 MINIO_ROOT_USER}
+      VTO_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请设置 MINIO_ROOT_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     volumes:
       - ./backend/data/sqlite:/app/data/sqlite
       - ./backend/data/tryon:/app/data/tryon
@@ -57,6 +69,57 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请设置 MINIO_ROOT_PASSWORD}
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-fitme-tryon}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$MINIO_BUCKET" &&
+        mc anonymous set none "local/$$MINIO_BUCKET"
+  tryon-worker:
+    image: rag-agent-backend
+    command: ["python", "-m", "app.workers.virtual_try_on"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CATALOG_DIR: /app/data/tianchi-catalog
+      CATALOG_IMAGE_DIR: /app/data/tianchi-catalog/images
+      VTO_PROVIDER_URL: ${VTO_PROVIDER_URL:?请设置 VTO_PROVIDER_URL}
+      VTO_PROVIDER_API_KEY: ${VTO_PROVIDER_API_KEY:-}
+      VTO_RESULT_SIGNING_SECRET: ${VTO_RESULT_SIGNING_SECRET:?请设置 VTO_RESULT_SIGNING_SECRET}
+      VTO_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      VTO_REDIS_PREFIX: fitme:vto
+      VTO_S3_ENDPOINT_URL: http://minio:9000
+      VTO_S3_BUCKET: ${MINIO_BUCKET:-fitme-tryon}
+      VTO_S3_REGION: us-east-1
+      VTO_S3_ACCESS_KEY: ${MINIO_ROOT_USER:?请设置 MINIO_ROOT_USER}
+      VTO_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请设置 MINIO_ROOT_PASSWORD}
   java-backend:
     build: ./java-backend
     depends_on:
@@ -97,3 +160,4 @@ services:
 
 volumes:
   postgres-data:
+  minio-data:

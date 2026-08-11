@@ -15,29 +15,38 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import uuid4
 
+from opentelemetry import metrics
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.catalog_paths import BACKEND_DIR
 
 
 logger = logging.getLogger(__name__)
+meter = metrics.get_meter("app.virtual_try_on")
+submitted_counter = meter.create_counter("vto.jobs.submitted")
+completed_counter = meter.create_counter("vto.jobs.completed")
+provider_latency = meter.create_histogram("vto.provider.duration", unit="s")
+queue_latency = meter.create_histogram("vto.queue.duration", unit="s")
 
 TryOnStatus = Literal["QUEUED", "PROCESSING", "SUCCEEDED", "FAILED"]
-_SUPPORTED_IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp"}
+Presentation = Literal["FEMININE", "MASCULINE", "NEUTRAL"]
+BodyShape = Literal["BALANCED", "TRIANGLE", "INVERTED_TRIANGLE", "RECTANGLE", "OVAL"]
+SkinTone = Literal["LIGHT", "MEDIUM", "TAN", "DEEP"]
+FitPreference = Literal["CLOSE", "REGULAR", "RELAXED"]
+
 _IDEMPOTENCY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
-_MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 _MAX_PROVIDER_OUTPUT_BYTES = 20 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 36_000_000
 
 
 class TryOnError(Exception):
-    """A user-safe virtual try-on error."""
+    """A stable, user-safe virtual try-on error."""
 
     def __init__(self, message: str, *, code: str, retryable: bool = False) -> None:
         super().__init__(message)
@@ -46,8 +55,46 @@ class TryOnError(Exception):
 
 
 class ProviderUnavailable(TryOnError):
-    def __init__(self, message: str = "Virtual try-on is temporarily unavailable.") -> None:
+    def __init__(self, message: str = "虚拟试穿服务暂时不可用，请稍后重试。") -> None:
         super().__init__(message, code="PROVIDER_UNAVAILABLE", retryable=True)
+
+
+@dataclass(frozen=True)
+class SyntheticBodyProfile:
+    height_cm: float
+    weight_kg: float
+    chest_cm: float
+    waist_cm: float
+    hip_cm: float
+    shoulder_cm: float | None = None
+    inseam_cm: float | None = None
+    presentation: Presentation = "NEUTRAL"
+    body_shape: BodyShape = "BALANCED"
+    skin_tone: SkinTone = "MEDIUM"
+    fit_preference: FitPreference = "REGULAR"
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> SyntheticBodyProfile:
+        return cls(
+            height_cm=float(value["height_cm"]),
+            weight_kg=float(value["weight_kg"]),
+            chest_cm=float(value["chest_cm"]),
+            waist_cm=float(value["waist_cm"]),
+            hip_cm=float(value["hip_cm"]),
+            shoulder_cm=_optional_float(value.get("shoulder_cm")),
+            inseam_cm=_optional_float(value.get("inseam_cm")),
+            presentation=str(value.get("presentation", "NEUTRAL")),  # type: ignore[arg-type]
+            body_shape=str(value.get("body_shape", "BALANCED")),  # type: ignore[arg-type]
+            skin_tone=str(value.get("skin_tone", "MEDIUM")),  # type: ignore[arg-type]
+            fit_preference=str(value.get("fit_preference", "REGULAR")),  # type: ignore[arg-type]
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _optional_float(value: object) -> float | None:
+    return None if value is None else float(value)
 
 
 @dataclass(frozen=True)
@@ -59,22 +106,24 @@ class VirtualTryOnSettings:
     provider_timeout_seconds: float
     result_signing_secret: str
     result_ttl_hours: int
+    saved_result_ttl_hours: int
     max_concurrent_jobs: int
     rate_limit_count: int
     rate_limit_window_seconds: int
+    redis_url: str = ""
+    redis_prefix: str = "fitme:vto"
+    s3_endpoint_url: str = ""
+    s3_bucket: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
 
     @classmethod
-    def from_env(cls) -> "VirtualTryOnSettings":
+    def from_env(cls) -> VirtualTryOnSettings:
         base_dir = BACKEND_DIR / "data" / "tryon"
-        database_path = Path(
-            os.getenv("VTO_DB_PATH", str(base_dir / "jobs.db"))
-        ).expanduser().resolve()
-        media_dir = Path(
-            os.getenv("VTO_MEDIA_DIR", str(base_dir / "media"))
-        ).expanduser().resolve()
         return cls(
-            database_path=database_path,
-            media_dir=media_dir,
+            database_path=Path(os.getenv("VTO_DB_PATH", str(base_dir / "jobs.db"))).expanduser().resolve(),
+            media_dir=Path(os.getenv("VTO_MEDIA_DIR", str(base_dir / "media"))).expanduser().resolve(),
             provider_url=os.getenv("VTO_PROVIDER_URL", "").strip(),
             provider_api_key=os.getenv("VTO_PROVIDER_API_KEY", "").strip(),
             provider_timeout_seconds=_env_float("VTO_PROVIDER_TIMEOUT_SECONDS", 75, 5, 180),
@@ -84,9 +133,17 @@ class VirtualTryOnSettings:
                 or os.getenv("AGENT_ACTION_SECRET", "").strip()
             ),
             result_ttl_hours=_env_int("VTO_RESULT_TTL_HOURS", 24, 1, 168),
-            max_concurrent_jobs=_env_int("VTO_MAX_CONCURRENT_JOBS", 2, 1, 8),
+            saved_result_ttl_hours=_env_int("VTO_SAVED_RESULT_TTL_HOURS", 168, 24, 720),
+            max_concurrent_jobs=_env_int("VTO_MAX_CONCURRENT_JOBS", 2, 1, 16),
             rate_limit_count=_env_int("VTO_RATE_LIMIT_COUNT", 10, 1, 100),
             rate_limit_window_seconds=_env_int("VTO_RATE_LIMIT_WINDOW_SECONDS", 600, 60, 86_400),
+            redis_url=os.getenv("VTO_REDIS_URL", "").strip(),
+            redis_prefix=os.getenv("VTO_REDIS_PREFIX", "fitme:vto").strip() or "fitme:vto",
+            s3_endpoint_url=os.getenv("VTO_S3_ENDPOINT_URL", "").strip(),
+            s3_bucket=os.getenv("VTO_S3_BUCKET", "").strip(),
+            s3_region=os.getenv("VTO_S3_REGION", "us-east-1").strip() or "us-east-1",
+            s3_access_key=os.getenv("VTO_S3_ACCESS_KEY", "").strip(),
+            s3_secret_key=os.getenv("VTO_S3_SECRET_KEY", "").strip(),
         )
 
 
@@ -115,34 +172,70 @@ class PreparedImage:
 
 
 @dataclass(frozen=True)
-class PersonImageAssessment:
-    image: PreparedImage
-    quality_score: int
-    warnings: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class TryOnJob:
     id: str
     user_id: str
     product_id: str
     category: str
+    body_profile: SyntheticBodyProfile
     status: TryOnStatus
     created_at: str
     updated_at: str
     expires_at: str
     attempt_count: int
-    input_path: str | None
-    output_path: str | None
-    image_width: int
-    image_height: int
-    quality_score: int
-    quality_warnings: tuple[str, ...]
+    output_key: str | None
     failure_code: str | None
+    saved: bool = False
+    feedback: str | None = None
 
 
-class TryOnStore:
-    """Small durable queue for one service instance; suitable for a single worker deployment."""
+class JobStore(Protocol):
+    def find_idempotent(self, user_id: str, idempotency_key: str) -> TryOnJob | None: ...
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        product_id: str,
+        category: str,
+        body_profile: SyntheticBodyProfile,
+        idempotency_key: str | None,
+        rate_limit_count: int,
+        rate_limit_window_seconds: int,
+        ttl_hours: int,
+    ) -> tuple[TryOnJob, bool]: ...
+
+    def get(self, job_id: str, user_id: str) -> TryOnJob | None: ...
+    def get_unscoped(self, job_id: str) -> TryOnJob | None: ...
+    def claim(self, job_id: str) -> TryOnJob | None: ...
+    def retry(self, job_id: str) -> None: ...
+    def succeed(self, job_id: str, output_key: str) -> None: ...
+    def fail(self, job_id: str, failure_code: str) -> None: ...
+    def list_user(self, user_id: str, limit: int) -> list[TryOnJob]: ...
+    def set_saved(self, job_id: str, user_id: str, saved: bool, ttl_hours: int) -> TryOnJob | None: ...
+    def set_feedback(self, job_id: str, user_id: str, feedback: str) -> TryOnJob | None: ...
+    def delete(self, job_id: str, user_id: str) -> TryOnJob | None: ...
+    def recover_pending(self) -> list[str]: ...
+    def cleanup_expired(self) -> list[str]: ...
+
+
+class MediaStore(Protocol):
+    def put(self, key: str, content: bytes) -> None: ...
+    def read(self, key: str) -> bytes | None: ...
+    def delete(self, key: str) -> None: ...
+
+
+class JobDispatcher(Protocol):
+    distributed: bool
+
+    async def enqueue(self, job_id: str) -> None: ...
+    async def next(self, timeout_seconds: int = 5) -> str | None: ...
+    async def ack(self, job_id: str) -> None: ...
+    async def recover(self) -> None: ...
+
+
+class SqliteTryOnStore:
+    """Development job store. Production uses RedisTryOnStore."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -172,27 +265,33 @@ class TryOnStore:
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     input_path TEXT,
                     output_path TEXT,
-                    image_width INTEGER NOT NULL,
-                    image_height INTEGER NOT NULL,
-                    quality_score INTEGER NOT NULL,
-                    quality_warnings_json TEXT NOT NULL,
+                    image_width INTEGER NOT NULL DEFAULT 0,
+                    image_height INTEGER NOT NULL DEFAULT 0,
+                    quality_score INTEGER NOT NULL DEFAULT 100,
+                    quality_warnings_json TEXT NOT NULL DEFAULT '[]',
                     failure_code TEXT,
-                    idempotency_key TEXT
+                    idempotency_key TEXT,
+                    body_profile_json TEXT NOT NULL DEFAULT '{}',
+                    saved INTEGER NOT NULL DEFAULT 0,
+                    feedback TEXT
                 )
                 """
             )
+            existing = {str(row[1]) for row in connection.execute("PRAGMA table_info(tryon_jobs)")}
+            for name, definition in (
+                ("body_profile_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("saved", "INTEGER NOT NULL DEFAULT 0"),
+                ("feedback", "TEXT"),
+            ):
+                if name not in existing:
+                    connection.execute(f"ALTER TABLE tryon_jobs ADD COLUMN {name} {definition}")
             connection.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_tryon_jobs_user_idempotency
-                ON tryon_jobs(user_id, idempotency_key)
-                WHERE idempotency_key IS NOT NULL
-                """
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tryon_jobs_user_idempotency "
+                "ON tryon_jobs(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
             )
             connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_tryon_jobs_user_created
-                ON tryon_jobs(user_id, created_at DESC)
-                """
+                "CREATE INDEX IF NOT EXISTS idx_tryon_jobs_user_created "
+                "ON tryon_jobs(user_id, created_at DESC)"
             )
 
     def find_idempotent(self, user_id: str, idempotency_key: str) -> TryOnJob | None:
@@ -209,11 +308,7 @@ class TryOnStore:
         user_id: str,
         product_id: str,
         category: str,
-        input_path: Path,
-        image_width: int,
-        image_height: int,
-        quality_score: int,
-        quality_warnings: tuple[str, ...],
+        body_profile: SyntheticBodyProfile,
         idempotency_key: str | None,
         rate_limit_count: int,
         rate_limit_window_seconds: int,
@@ -221,38 +316,34 @@ class TryOnStore:
     ) -> tuple[TryOnJob, bool]:
         now = datetime.now(UTC)
         now_value = _timestamp(now)
-        expires_at = _timestamp(now + timedelta(hours=ttl_hours))
         job_id = uuid4().hex
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 if idempotency_key:
-                    existing = connection.execute(
+                    row = connection.execute(
                         "SELECT * FROM tryon_jobs WHERE user_id = ? AND idempotency_key = ?",
                         (user_id, idempotency_key),
                     ).fetchone()
-                    if existing:
+                    if row:
                         connection.execute("COMMIT")
-                        return _job_from_row(existing), False
+                        return _job_from_row(row), False
                 window_start = _timestamp(now - timedelta(seconds=rate_limit_window_seconds))
                 usage = connection.execute(
                     "SELECT COUNT(*) FROM tryon_jobs WHERE user_id = ? AND created_at >= ?",
                     (user_id, window_start),
                 ).fetchone()[0]
                 if usage >= rate_limit_count:
-                    raise TryOnError(
-                        "Too many virtual try-on requests. Please try again shortly.",
-                        code="RATE_LIMITED",
-                        retryable=True,
-                    )
+                    raise TryOnError("试穿次数过多，请稍后再试。", code="RATE_LIMITED", retryable=True)
+                expires_at = _timestamp(now + timedelta(hours=ttl_hours))
                 connection.execute(
                     """
                     INSERT INTO tryon_jobs (
                         id, user_id, product_id, category, status, created_at, updated_at,
                         expires_at, attempt_count, input_path, output_path, image_width,
                         image_height, quality_score, quality_warnings_json, failure_code,
-                        idempotency_key
-                    ) VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, 0, ?, NULL, ?, ?, ?, ?, NULL, ?)
+                        idempotency_key, body_profile_json, saved, feedback
+                    ) VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, 0, NULL, NULL, 0, 0, 100, '[]', NULL, ?, ?, 0, NULL)
                     """,
                     (
                         job_id,
@@ -262,12 +353,8 @@ class TryOnStore:
                         now_value,
                         now_value,
                         expires_at,
-                        str(input_path),
-                        image_width,
-                        image_height,
-                        quality_score,
-                        json.dumps(quality_warnings, ensure_ascii=False),
                         idempotency_key,
+                        json.dumps(body_profile.to_dict(), ensure_ascii=False, separators=(",", ":")),
                     ),
                 )
                 row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -292,101 +379,169 @@ class TryOnStore:
     def claim(self, job_id: str) -> TryOnJob | None:
         now = _timestamp(datetime.now(UTC))
         with self._connect() as connection:
-            updated = connection.execute(
-                """
-                UPDATE tryon_jobs
-                SET status = 'PROCESSING', attempt_count = attempt_count + 1, updated_at = ?
-                WHERE id = ? AND status = 'QUEUED'
-                """,
-                (now, job_id),
-            ).rowcount
-            if not updated:
-                return None
-            row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
-        return _job_from_row(row)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                updated = connection.execute(
+                    "UPDATE tryon_jobs SET status = 'PROCESSING', attempt_count = attempt_count + 1, "
+                    "updated_at = ? WHERE id = ? AND status = 'QUEUED'",
+                    (now, job_id),
+                ).rowcount
+                row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return _job_from_row(row) if updated and row else None
 
     def retry(self, job_id: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "UPDATE tryon_jobs SET status = 'QUEUED', updated_at = ? WHERE id = ?",
-                (_timestamp(datetime.now(UTC)), job_id),
-            )
+        self._update(job_id, "status = 'QUEUED', updated_at = ?", (_timestamp(datetime.now(UTC)),))
 
-    def succeed(self, job_id: str, output_path: Path) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE tryon_jobs
-                SET status = 'SUCCEEDED', output_path = ?, input_path = NULL,
-                    failure_code = NULL, updated_at = ?
-                WHERE id = ?
-                """,
-                (str(output_path), _timestamp(datetime.now(UTC)), job_id),
-            )
+    def succeed(self, job_id: str, output_key: str) -> None:
+        self._update(
+            job_id,
+            "status = 'SUCCEEDED', output_path = ?, failure_code = NULL, updated_at = ?",
+            (output_key, _timestamp(datetime.now(UTC))),
+        )
 
     def fail(self, job_id: str, failure_code: str) -> None:
+        self._update(
+            job_id,
+            "status = 'FAILED', failure_code = ?, updated_at = ?",
+            (failure_code, _timestamp(datetime.now(UTC))),
+        )
+
+    def _update(self, job_id: str, clause: str, values: tuple[object, ...]) -> None:
+        with self._connect() as connection:
+            connection.execute(f"UPDATE tryon_jobs SET {clause} WHERE id = ?", (*values, job_id))
+
+    def list_user(self, user_id: str, limit: int) -> list[TryOnJob]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tryon_jobs WHERE user_id = ? AND expires_at > ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (user_id, _timestamp(datetime.now(UTC)), limit),
+            ).fetchall()
+        return [_job_from_row(row) for row in rows]
+
+    def set_saved(self, job_id: str, user_id: str, saved: bool, ttl_hours: int) -> TryOnJob | None:
+        expires_at = _timestamp(datetime.now(UTC) + timedelta(hours=ttl_hours))
         with self._connect() as connection:
             connection.execute(
-                """
-                UPDATE tryon_jobs
-                SET status = 'FAILED', input_path = NULL, failure_code = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (failure_code, _timestamp(datetime.now(UTC)), job_id),
+                "UPDATE tryon_jobs SET saved = ?, expires_at = ?, updated_at = ? "
+                "WHERE id = ? AND user_id = ? AND status = 'SUCCEEDED'",
+                (int(saved), expires_at, _timestamp(datetime.now(UTC)), job_id, user_id),
             )
+        return self.get(job_id, user_id)
+
+    def set_feedback(self, job_id: str, user_id: str, feedback: str) -> TryOnJob | None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE tryon_jobs SET feedback = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (feedback, _timestamp(datetime.now(UTC)), job_id, user_id),
+            )
+        return self.get(job_id, user_id)
+
+    def delete(self, job_id: str, user_id: str) -> TryOnJob | None:
+        job = self.get(job_id, user_id)
+        if job is None:
+            return None
+        with self._connect() as connection:
+            connection.execute("DELETE FROM tryon_jobs WHERE id = ? AND user_id = ?", (job_id, user_id))
+        return job
 
     def recover_pending(self) -> list[str]:
-        """Requeue interrupted work after a process restart."""
-        now = _timestamp(datetime.now(UTC))
         with self._connect() as connection:
             connection.execute(
                 "UPDATE tryon_jobs SET status = 'QUEUED', updated_at = ? WHERE status = 'PROCESSING'",
-                (now,),
+                (_timestamp(datetime.now(UTC)),),
             )
             rows = connection.execute(
                 "SELECT id FROM tryon_jobs WHERE status = 'QUEUED' ORDER BY created_at ASC"
             ).fetchall()
         return [str(row["id"]) for row in rows]
 
-    def cleanup_expired(self) -> list[Path]:
+    def cleanup_expired(self) -> list[str]:
         now = _timestamp(datetime.now(UTC))
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT input_path, output_path FROM tryon_jobs WHERE expires_at <= ?",
-                (now,),
+                "SELECT output_path FROM tryon_jobs WHERE expires_at <= ?", (now,)
             ).fetchall()
             connection.execute("DELETE FROM tryon_jobs WHERE expires_at <= ?", (now,))
-        return [Path(value) for row in rows for value in row if value]
+        return [str(row["output_path"]) for row in rows if row["output_path"]]
 
 
 def _job_from_row(row: sqlite3.Row) -> TryOnJob:
-    warnings = json.loads(row["quality_warnings_json"])
+    raw_profile = json.loads(row["body_profile_json"] or "{}")
+    if not raw_profile:
+        raw_profile = _legacy_profile().to_dict()
     return TryOnJob(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
         product_id=str(row["product_id"]),
         category=str(row["category"]),
+        body_profile=SyntheticBodyProfile.from_dict(raw_profile),
         status=row["status"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         expires_at=str(row["expires_at"]),
         attempt_count=int(row["attempt_count"]),
-        input_path=row["input_path"],
-        output_path=row["output_path"],
-        image_width=int(row["image_width"]),
-        image_height=int(row["image_height"]),
-        quality_score=int(row["quality_score"]),
-        quality_warnings=tuple(str(item) for item in warnings),
+        output_key=row["output_path"],
         failure_code=row["failure_code"],
+        saved=bool(row["saved"]),
+        feedback=row["feedback"],
     )
 
 
-def _timestamp(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+def _legacy_profile() -> SyntheticBodyProfile:
+    return SyntheticBodyProfile(170, 60, 88, 72, 94)
+
+
+class LocalMediaStore:
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, key: str) -> Path:
+        path = (self.root / key).resolve()
+        if self.root not in path.parents:
+            raise TryOnError("结果地址无效。", code="INVALID_RESULT_KEY")
+        return path
+
+    def put(self, key: str, content: bytes) -> None:
+        path = self._path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def read(self, key: str) -> bytes | None:
+        path = self._path(key)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
+
+class LocalDispatcher:
+    distributed = False
+
+    async def enqueue(self, job_id: str) -> None:
+        del job_id
+
+    async def next(self, timeout_seconds: int = 5) -> str | None:
+        del timeout_seconds
+        return None
+
+    async def ack(self, job_id: str) -> None:
+        del job_id
+
+    async def recover(self) -> None:
+        return None
 
 
 class HttpVirtualTryOnProvider:
-    """Provider adapter for a narrowly-scoped, image-in/image-out inference API."""
+    """Body-profile-conditioned synthetic-model virtual try-on provider."""
 
     def __init__(self, settings: VirtualTryOnSettings) -> None:
         self.endpoint = settings.provider_url
@@ -400,26 +555,21 @@ class HttpVirtualTryOnProvider:
     async def render(
         self,
         *,
-        person: PreparedImage,
+        body_profile: SyntheticBodyProfile,
         garment: PreparedImage,
         product_id: str,
         category: str,
         job_id: str,
     ) -> bytes:
         if not self.configured:
-            raise ProviderUnavailable("Virtual try-on has not been configured.")
+            raise ProviderUnavailable("当前环境尚未配置虚拟模特生成服务。")
         return await asyncio.to_thread(
-            self._render_sync,
-            person,
-            garment,
-            product_id,
-            category,
-            job_id,
+            self._render_sync, body_profile, garment, product_id, category, job_id
         )
 
     def _render_sync(
         self,
-        person: PreparedImage,
+        body_profile: SyntheticBodyProfile,
         garment: PreparedImage,
         product_id: str,
         category: str,
@@ -430,12 +580,10 @@ class HttpVirtualTryOnProvider:
                 "product_id": product_id,
                 "category": category,
                 "request_id": job_id,
-                "prompt": _try_on_prompt(category),
+                "body_profile": json.dumps(body_profile.to_dict(), separators=(",", ":")),
+                "prompt": _try_on_prompt(body_profile, category),
             },
-            files={
-                "person_image": ("person.jpg", person.mime_type, person.content),
-                "garment_image": ("garment.jpg", garment.mime_type, garment.content),
-            },
+            files={"garment_image": ("garment.jpg", garment.mime_type, garment.content)},
         )
         headers = {
             "Accept": "image/*, application/json",
@@ -452,19 +600,19 @@ class HttpVirtualTryOnProvider:
         except urllib.error.HTTPError as error:
             retryable = error.code == 429 or error.code >= 500
             raise TryOnError(
-                "Virtual try-on generation failed.",
+                "虚拟模特生成失败。",
                 code="PROVIDER_REJECTED" if not retryable else "PROVIDER_UNAVAILABLE",
                 retryable=retryable,
             ) from error
         except (urllib.error.URLError, TimeoutError) as error:
             raise ProviderUnavailable() from error
         if len(payload) > _MAX_PROVIDER_OUTPUT_BYTES:
-            raise TryOnError("Generated image is too large.", code="INVALID_PROVIDER_RESPONSE")
+            raise TryOnError("生成结果过大。", code="INVALID_PROVIDER_RESPONSE")
         if content_type.startswith("image/"):
             return payload
         if content_type == "application/json":
             return _image_from_provider_json(payload)
-        raise TryOnError("Provider returned an unsupported response.", code="INVALID_PROVIDER_RESPONSE")
+        raise TryOnError("模型服务返回了不支持的格式。", code="INVALID_PROVIDER_RESPONSE")
 
 
 def _multipart_body(
@@ -475,27 +623,20 @@ def _multipart_body(
     boundary = "----fitme-" + uuid4().hex
     chunks: list[bytes] = []
     for name, value in fields.items():
-        chunks.extend(
-            (
-                f"--{boundary}\r\n".encode(),
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                value.encode("utf-8"),
-                b"\r\n",
-            )
-        )
+        chunks.extend((
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            value.encode("utf-8"),
+            b"\r\n",
+        ))
     for name, (filename, mime_type, content) in files.items():
-        chunks.extend(
-            (
-                f"--{boundary}\r\n".encode(),
-                (
-                    f'Content-Disposition: form-data; name="{name}"; '
-                    f'filename="{filename}"\r\n'
-                ).encode(),
-                f"Content-Type: {mime_type}\r\n\r\n".encode(),
-                content,
-                b"\r\n",
-            )
-        )
+        chunks.extend((
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode(),
+            f"Content-Type: {mime_type}\r\n\r\n".encode(),
+            content,
+            b"\r\n",
+        ))
     chunks.append(f"--{boundary}--\r\n".encode())
     return b"".join(chunks), boundary
 
@@ -509,85 +650,67 @@ def _image_from_provider_json(payload: bytes) -> bytes:
             if isinstance(item, dict):
                 encoded = item.get("b64_json") or item.get("image_base64")
         if not isinstance(encoded, str):
-            raise ValueError("No base64 image payload")
+            raise ValueError("missing image")
         image = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error) as error:
-        raise TryOnError("Provider returned an invalid image.", code="INVALID_PROVIDER_RESPONSE") from error
+        raise TryOnError("模型服务返回了无效图片。", code="INVALID_PROVIDER_RESPONSE") from error
     if len(image) > _MAX_PROVIDER_OUTPUT_BYTES:
-        raise TryOnError("Generated image is too large.", code="INVALID_PROVIDER_RESPONSE")
+        raise TryOnError("生成结果过大。", code="INVALID_PROVIDER_RESPONSE")
     return image
 
 
-def _try_on_prompt(category: str) -> str:
-    return (
-        "Create a photorealistic virtual try-on image. Keep the same person, face, "
-        "body proportions, pose, hands, camera angle and background from person_image. "
-        "Dress that person in garment_image as a "
-        f"{category}. Preserve garment color, pattern, logo, seams and silhouette. "
-        "Render physically plausible drape, folds, occlusion, shadows and fit. "
-        "Do not add people, change identity, alter body shape, add text or a watermark."
+def _try_on_prompt(profile: SyntheticBodyProfile, category: str) -> str:
+    measurements = (
+        f"height {profile.height_cm:g} cm, weight {profile.weight_kg:g} kg, "
+        f"chest {profile.chest_cm:g} cm, waist {profile.waist_cm:g} cm, hip {profile.hip_cm:g} cm"
     )
-
-
-def prepare_person_image(content: bytes, declared_mime: str | None) -> PersonImageAssessment:
-    image = _normalize_image(content, declared_mime, max_long_edge=2048)
-    warnings: list[str] = []
-    score = 100
-    if image.width < 720 or image.height < 960:
-        warnings.append("Use a full-body photo at least 720 × 960 for a more reliable result.")
-        score -= 25
-    ratio = image.height / image.width
-    if ratio < 1.15:
-        warnings.append("A vertical, head-to-toe photo gives the model better fit context.")
-        score -= 20
-    if image.width * image.height < 1_000_000:
-        warnings.append("Sharper photos improve fabric and edge detail.")
-        score -= 10
-    return PersonImageAssessment(image=image, quality_score=max(score, 0), warnings=tuple(warnings))
+    optional = []
+    if profile.shoulder_cm is not None:
+        optional.append(f"shoulder {profile.shoulder_cm:g} cm")
+    if profile.inseam_cm is not None:
+        optional.append(f"inseam {profile.inseam_cm:g} cm")
+    if optional:
+        measurements += ", " + ", ".join(optional)
+    return (
+        "Create a photorealistic, fully synthetic adult virtual model. Do not depict a real or "
+        "identifiable person. Use a neutral studio background and a natural full-body front pose. "
+        f"Body measurements: {measurements}. Presentation: {profile.presentation.lower()}; "
+        f"body shape: {profile.body_shape.lower()}; skin tone: {profile.skin_tone.lower()}. "
+        f"Dress the model in garment_image as {category}, with a {profile.fit_preference.lower()} fit. "
+        "Preserve garment color, pattern, logo, seams and silhouette. Render physically plausible "
+        "drape, folds, occlusion and shadows. Do not add text, logos or watermarks."
+    )
 
 
 def prepare_garment_image(content: bytes) -> PreparedImage:
-    return _normalize_image(content, None, max_long_edge=2048)
+    return _normalize_image(content, max_long_edge=2048)
 
 
 def prepare_provider_result(content: bytes) -> PreparedImage:
-    return _normalize_image(
-        content,
-        None,
-        max_long_edge=2048,
-        max_bytes=_MAX_PROVIDER_OUTPUT_BYTES,
-    )
+    return _normalize_image(content, max_long_edge=2048, max_bytes=_MAX_PROVIDER_OUTPUT_BYTES)
 
 
-def _normalize_image(
-    content: bytes,
-    declared_mime: str | None,
-    *,
-    max_long_edge: int,
-    max_bytes: int = _MAX_UPLOAD_BYTES,
-) -> PreparedImage:
+def _normalize_image(content: bytes, *, max_long_edge: int, max_bytes: int = _MAX_PROVIDER_OUTPUT_BYTES) -> PreparedImage:
     if not content:
-        raise TryOnError("An image is required.", code="INVALID_IMAGE")
+        raise TryOnError("图片不能为空。", code="INVALID_IMAGE")
     if len(content) > max_bytes:
-        raise TryOnError("Image exceeds the 12 MB limit.", code="IMAGE_TOO_LARGE")
-    if declared_mime and declared_mime.casefold() not in _SUPPORTED_IMAGE_MIMES:
-        raise TryOnError("Use a JPG, PNG, or WebP image.", code="UNSUPPORTED_IMAGE_TYPE")
+        raise TryOnError("图片文件过大。", code="IMAGE_TOO_LARGE")
     try:
         with Image.open(io.BytesIO(content)) as source:
             source.verify()
         with Image.open(io.BytesIO(content)) as source:
             source.load()
             if source.width * source.height > _MAX_IMAGE_PIXELS:
-                raise TryOnError("Image dimensions are too large.", code="IMAGE_TOO_LARGE")
+                raise TryOnError("图片尺寸过大。", code="IMAGE_TOO_LARGE")
             normalized = ImageOps.exif_transpose(source).convert("RGB")
     except TryOnError:
         raise
     except (OSError, UnidentifiedImageError) as error:
-        raise TryOnError("Uploaded file is not a valid image.", code="INVALID_IMAGE") from error
+        raise TryOnError("图片格式无效。", code="INVALID_IMAGE") from error
     normalized.thumbnail((max_long_edge, max_long_edge), Image.Resampling.LANCZOS)
     output = io.BytesIO()
     normalized.save(output, format="JPEG", quality=94, optimize=True)
-    return PreparedImage(content=output.getvalue(), width=normalized.width, height=normalized.height)
+    return PreparedImage(output.getvalue(), normalized.width, normalized.height)
 
 
 def infer_category(product: dict[str, object]) -> str:
@@ -596,12 +719,12 @@ def infer_category(product: dict[str, object]) -> str:
         for field in ("product_type_name", "product_group_name", "garment_group_name", "prod_name")
     )
     categories = (
-        ("shoes", ("shoe", "sneaker", "boot", "sandal", "heel")),
-        ("dress", ("dress",)),
-        ("skirt", ("skirt",)),
-        ("bottom", ("trouser", "pants", "jean", "short", "legging")),
-        ("outerwear", ("jacket", "coat", "blazer", "cardigan", "vest")),
-        ("top", ("shirt", "tee", "t-shirt", "blouse", "sweater", "hoodie", "top", "polo")),
+        ("shoes", ("shoe", "sneaker", "boot", "sandal", "heel", "鞋", "靴")),
+        ("dress", ("dress", "连衣裙", "礼服")),
+        ("skirt", ("skirt", "半身裙")),
+        ("bottom", ("trouser", "pants", "jean", "short", "legging", "裤", "牛仔")),
+        ("outerwear", ("jacket", "coat", "blazer", "cardigan", "vest", "外套", "夹克", "风衣", "开衫")),
+        ("top", ("shirt", "tee", "t-shirt", "blouse", "sweater", "hoodie", "top", "polo", "衬衫", "上衣", "卫衣", "针织")),
     )
     for category, terms in categories:
         if any(term in source for term in terms):
@@ -614,19 +737,25 @@ def validate_idempotency_key(value: str | None) -> str | None:
         return None
     key = value.strip()
     if not _IDEMPOTENCY_PATTERN.fullmatch(key):
-        raise TryOnError("Idempotency-Key must be 8-128 safe characters.", code="INVALID_IDEMPOTENCY_KEY")
+        raise TryOnError("Idempotency-Key 必须是 8-128 位安全字符。", code="INVALID_IDEMPOTENCY_KEY")
     return key
 
 
 class VirtualTryOnService:
-    def __init__(self, settings: VirtualTryOnSettings, provider: HttpVirtualTryOnProvider | None = None) -> None:
+    def __init__(
+        self,
+        settings: VirtualTryOnSettings,
+        *,
+        store: JobStore | None = None,
+        media_store: MediaStore | None = None,
+        dispatcher: JobDispatcher | None = None,
+        provider: HttpVirtualTryOnProvider | None = None,
+    ) -> None:
         self.settings = settings
-        self.store = TryOnStore(settings.database_path)
+        self.store = store or SqliteTryOnStore(settings.database_path)
+        self.media_store = media_store or LocalMediaStore(settings.media_dir / "results")
+        self.dispatcher = dispatcher or LocalDispatcher()
         self.provider = provider or HttpVirtualTryOnProvider(settings)
-        self.inputs_dir = settings.media_dir / "private-inputs"
-        self.outputs_dir = settings.media_dir / "results"
-        self.inputs_dir.mkdir(parents=True, exist_ok=True)
-        self.outputs_dir.mkdir(parents=True, exist_ok=True)
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_jobs)
         self._scheduled: set[str] = set()
         self._scheduled_lock = threading.Lock()
@@ -641,94 +770,97 @@ class VirtualTryOnService:
         *,
         user_id: str,
         product: dict[str, object],
-        assessment: PersonImageAssessment,
+        body_profile: SyntheticBodyProfile,
         idempotency_key: str | None,
     ) -> tuple[TryOnJob, bool]:
         self.cleanup_if_due()
-        category = infer_category(product)
-        job_id = uuid4().hex
-        input_path = self.inputs_dir / f"{job_id}.jpg"
-        input_path.write_bytes(assessment.image.content)
-        try:
-            job, created = self.store.create(
-                user_id=user_id,
-                product_id=str(product["article_id"]),
-                category=category,
-                input_path=input_path,
-                image_width=assessment.image.width,
-                image_height=assessment.image.height,
-                quality_score=assessment.quality_score,
-                quality_warnings=assessment.warnings,
-                idempotency_key=idempotency_key,
-                rate_limit_count=self.settings.rate_limit_count,
-                rate_limit_window_seconds=self.settings.rate_limit_window_seconds,
-                ttl_hours=self.settings.result_ttl_hours,
-            )
-        except Exception:
-            input_path.unlink(missing_ok=True)
-            raise
-        if not created:
-            input_path.unlink(missing_ok=True)
+        job, created = self.store.create(
+            user_id=user_id,
+            product_id=str(product["article_id"]),
+            category=infer_category(product),
+            body_profile=body_profile,
+            idempotency_key=idempotency_key,
+            rate_limit_count=self.settings.rate_limit_count,
+            rate_limit_window_seconds=self.settings.rate_limit_window_seconds,
+            ttl_hours=self.settings.result_ttl_hours,
+        )
+        if created:
+            submitted_counter.add(1, {"category": job.category})
         return job, created
 
-    def schedule(self, job_id: str, product: dict[str, object]) -> None:
+    async def dispatch(self, job_id: str) -> None:
+        if self.dispatcher.distributed:
+            await self.dispatcher.enqueue(job_id)
+            return
         with self._scheduled_lock:
             if job_id in self._scheduled:
                 return
             self._scheduled.add(job_id)
-        asyncio.create_task(self._run(job_id, product), name=f"try-on-{job_id}")
+        asyncio.create_task(self.process(job_id), name=f"try-on-{job_id}")
 
     async def recover(self) -> None:
-        for job_id in self.store.recover_pending():
-            job = self.store.get_unscoped(job_id)
-            if job is not None:
-                try:
-                    product = await asyncio.to_thread(load_catalog_product, job.product_id)
-                except TryOnError as error:
-                    self._fail_job(job, error.code)
-                    continue
-                self.schedule(job_id, product)
+        pending = self.store.recover_pending()
+        await self.dispatcher.recover()
+        for job_id in pending:
+            await self.dispatch(job_id)
 
-    async def _run(self, job_id: str, product: dict[str, object]) -> None:
-        retry_product: dict[str, object] | None = None
+    async def process(self, job_id: str) -> None:
         try:
             async with self._semaphore:
                 job = self.store.claim(job_id)
                 if job is None:
                     return
+                queue_latency.record(max(time.time() - _parse_timestamp(job.created_at).timestamp(), 0))
                 try:
+                    product = await asyncio.to_thread(load_catalog_product, job.product_id)
+                    started = time.monotonic()
                     output = await self.provider.render(
-                        person=_prepared_image_from_path(Path(job.input_path or "")),
+                        body_profile=job.body_profile,
                         garment=load_product_image(product),
                         product_id=job.product_id,
                         category=job.category,
                         job_id=job.id,
                     )
+                    provider_latency.record(time.monotonic() - started, {"category": job.category})
                     result = prepare_provider_result(output)
-                    output_path = self.outputs_dir / f"{job.id}.jpg"
-                    output_path.write_bytes(result.content)
-                    self.store.succeed(job.id, output_path)
-                    Path(job.input_path or "").unlink(missing_ok=True)
+                    output_key = f"results/{job.user_id}/{job.id}.jpg"
+                    await asyncio.to_thread(self.media_store.put, output_key, result.content)
+                    self.store.succeed(job.id, output_key)
+                    completed_counter.add(1, {"status": "succeeded", "category": job.category})
                     logger.info("try_on_succeeded job_id=%s category=%s attempt=%s", job.id, job.category, job.attempt_count)
                 except TryOnError as error:
                     if error.retryable and job.attempt_count < 3:
                         self.store.retry(job.id)
                         await asyncio.sleep(0.5 * job.attempt_count)
-                        retry_product = product
-                        return
-                    self._fail_job(job, error.code)
+                        if not self.dispatcher.distributed:
+                            with self._scheduled_lock:
+                                self._scheduled.discard(job.id)
+                        await self.dispatch(job.id)
+                    else:
+                        self._fail_job(job, error.code)
                 except Exception:
                     logger.exception("try_on_failed job_id=%s", job.id)
                     self._fail_job(job, "INTERNAL_ERROR")
         finally:
             with self._scheduled_lock:
                 self._scheduled.discard(job_id)
-            if retry_product is not None:
-                self.schedule(job_id, retry_product)
+
+    async def worker_loop(self) -> None:
+        if not self.dispatcher.distributed:
+            raise RuntimeError("VTO_REDIS_URL is required for the distributed worker")
+        await self.recover()
+        while True:
+            job_id = await self.dispatcher.next()
+            if not job_id:
+                continue
+            try:
+                await self.process(job_id)
+            finally:
+                await self.dispatcher.ack(job_id)
 
     def _fail_job(self, job: TryOnJob, code: str) -> None:
         self.store.fail(job.id, code)
-        Path(job.input_path or "").unlink(missing_ok=True)
+        completed_counter.add(1, {"status": "failed", "category": job.category, "code": code})
         logger.warning("try_on_failed job_id=%s code=%s", job.id, code)
 
     def cleanup_if_due(self) -> None:
@@ -736,40 +868,62 @@ class VirtualTryOnService:
         if now - self._last_cleanup < 60:
             return
         self._last_cleanup = now
-        for path in self.store.cleanup_expired():
-            path.unlink(missing_ok=True)
+        for key in self.store.cleanup_expired():
+            self.media_store.delete(key)
+
+    def delete(self, job_id: str, user_id: str) -> bool:
+        job = self.store.delete(job_id, user_id)
+        if job is None:
+            return False
+        if job.output_key:
+            self.media_store.delete(job.output_key)
+        return True
 
     def sign_result_url(self, job: TryOnJob) -> str | None:
-        if job.status != "SUCCEEDED" or not job.output_path or not self.settings.result_signing_secret:
+        if job.status != "SUCCEEDED" or not job.output_key or not self.settings.result_signing_secret:
             return None
         expires_at = int(time.time()) + 15 * 60
-        message = f"{job.id}:{job.user_id}:{expires_at}".encode()
-        signature = hmac.new(
-            self.settings.result_signing_secret.encode(), message, hashlib.sha256
-        ).hexdigest()
+        signature = self._signature(job, expires_at)
         return f"/api/try-on/jobs/{job.id}/result?expires={expires_at}&signature={signature}"
 
     def verify_result_signature(self, job: TryOnJob, expires: int, signature: str) -> bool:
         if expires < int(time.time()) or expires > int(time.time()) + 16 * 60:
             return False
+        return hmac.compare_digest(signature, self._signature(job, expires))
+
+    def _signature(self, job: TryOnJob, expires: int) -> str:
         message = f"{job.id}:{job.user_id}:{expires}".encode()
-        expected = hmac.new(
+        return hmac.new(
             self.settings.result_signing_secret.encode(), message, hashlib.sha256
         ).hexdigest()
-        return hmac.compare_digest(signature, expected)
 
 
-def _prepared_image_from_path(path: Path) -> PreparedImage:
-    try:
-        return prepare_garment_image(path.read_bytes())
-    except OSError as error:
-        raise TryOnError("Source image is no longer available.", code="INPUT_EXPIRED") from error
+def build_virtual_try_on_service(settings: VirtualTryOnSettings | None = None) -> VirtualTryOnService:
+    resolved = settings or VirtualTryOnSettings.from_env()
+    store: JobStore | None = None
+    media_store: MediaStore | None = None
+    dispatcher: JobDispatcher | None = None
+    if resolved.redis_url:
+        from app.core.try_on_runtime import RedisJobDispatcher, RedisTryOnStore
+
+        store = RedisTryOnStore(resolved)
+        dispatcher = RedisJobDispatcher(resolved)
+    if resolved.s3_bucket:
+        from app.core.try_on_runtime import S3MediaStore
+
+        media_store = S3MediaStore(resolved)
+    return VirtualTryOnService(
+        resolved,
+        store=store,
+        media_store=media_store,
+        dispatcher=dispatcher,
+    )
 
 
 def load_product_image(product: dict[str, object]) -> PreparedImage:
     image_path = str(product.get("image_path") or "").replace("\\", "/")
     if not image_path:
-        raise TryOnError("This product has no usable try-on image.", code="PRODUCT_IMAGE_UNAVAILABLE")
+        raise TryOnError("该商品没有可用的试穿图片。", code="PRODUCT_IMAGE_UNAVAILABLE")
     from app.core.catalog_paths import get_catalog_image_dir
 
     image_root = get_catalog_image_dir().resolve()
@@ -778,11 +932,11 @@ def load_product_image(product: dict[str, object]) -> PreparedImage:
         relative = Path(*relative.parts[1:])
     candidate = (image_root / relative).resolve()
     if image_root not in candidate.parents or not candidate.is_file():
-        raise TryOnError("This product has no usable try-on image.", code="PRODUCT_IMAGE_UNAVAILABLE")
+        raise TryOnError("该商品没有可用的试穿图片。", code="PRODUCT_IMAGE_UNAVAILABLE")
     try:
         return prepare_garment_image(candidate.read_bytes())
     except OSError as error:
-        raise TryOnError("This product has no usable try-on image.", code="PRODUCT_IMAGE_UNAVAILABLE") from error
+        raise TryOnError("该商品没有可用的试穿图片。", code="PRODUCT_IMAGE_UNAVAILABLE") from error
 
 
 def load_catalog_product(product_id: str) -> dict[str, object]:
@@ -799,7 +953,15 @@ def load_catalog_product(product_id: str) -> dict[str, object]:
                 (product_id,),
             ).fetchone()
     except FileNotFoundError as error:
-        raise TryOnError("Product catalog is temporarily unavailable.", code="CATALOG_UNAVAILABLE", retryable=True) from error
+        raise TryOnError("商品目录暂时不可用。", code="CATALOG_UNAVAILABLE", retryable=True) from error
     if row is None:
-        raise TryOnError("Product was not found.", code="PRODUCT_NOT_FOUND")
+        raise TryOnError("未找到该商品。", code="PRODUCT_NOT_FOUND")
     return dict(row)
+
+
+def _timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
