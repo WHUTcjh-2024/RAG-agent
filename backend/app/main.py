@@ -21,6 +21,7 @@ from app.core.catalog_paths import (
     get_text_index_dir,
 )
 from app.core.request_id import RequestIdMiddleware, create_request_id
+from app.mcp.server import TrustedMcpContextMiddleware, get_mcp_server
 from app.db.database import get_db_path
 
 
@@ -64,6 +65,9 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(commerce_router, prefix="/api")
 app.include_router(try_on_router, prefix="/api")
+mcp_app = get_mcp_server().streamable_http_app()
+mcp_app.add_middleware(TrustedMcpContextMiddleware)
+app.mount("/mcp", mcp_app)
 
 IMAGE_DIR = get_catalog_image_dir()
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
