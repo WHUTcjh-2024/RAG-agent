@@ -72,6 +72,7 @@ class AgentMemoryStore:
                 """
                 CREATE TABLE IF NOT EXISTS agent_sessions (
                     session_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT,
                     history_json TEXT NOT NULL DEFAULT '[]',
                     slots_json TEXT NOT NULL DEFAULT '{}',
                     last_results_json TEXT NOT NULL DEFAULT '[]',
@@ -79,6 +80,14 @@ class AgentMemoryStore:
                 )
                 """
             )
+            session_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(agent_sessions)")
+            }
+            if "owner_user_id" not in session_columns:
+                connection.execute(
+                    "ALTER TABLE agent_sessions ADD COLUMN owner_user_id TEXT"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_actions (
@@ -239,6 +248,87 @@ class AgentMemoryStore:
                 """,
                 (task_id,),
             )
+
+    @staticmethod
+    def _validate_owner_user_id(user_id: str) -> str:
+        candidate = user_id.strip()
+        if not candidate or len(candidate) > 128:
+            raise ValueError("Trusted user ID must be 1-128 characters.")
+        return candidate
+
+    def claim_session(self, session_id: str, user_id: str) -> bool:
+        """Create a session for an owner or verify its existing ownership.
+
+        Existing rows without an owner predate access control and are deliberately
+        not claimable: knowing a legacy session ID is not proof of authorization.
+        """
+        session_id = validate_session_id(session_id)
+        user_id = self._validate_owner_user_id(user_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT owner_user_id FROM agent_sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO agent_sessions(session_id, owner_user_id) VALUES (?, ?)",
+                    (session_id, user_id),
+                )
+                return True
+            owner_user_id = row["owner_user_id"]
+            return owner_user_id is not None and str(owner_user_id) == user_id
+
+    def task_ids_for_owned_session(self, session_id: str, user_id: str) -> list[str] | None:
+        session_id = validate_session_id(session_id)
+        user_id = self._validate_owner_user_id(user_id)
+        with self._connect() as connection:
+            owner = connection.execute(
+                "SELECT 1 FROM agent_sessions WHERE session_id=? AND owner_user_id=?",
+                (session_id, user_id),
+            ).fetchone()
+            if owner is None:
+                return None
+            rows = connection.execute(
+                "SELECT task_id FROM agent_task_controls WHERE session_id=? AND user_id=?",
+                (session_id, user_id),
+            ).fetchall()
+        return [str(row["task_id"]) for row in rows]
+
+    def is_session_owned_by(self, session_id: str, user_id: str) -> bool:
+        session_id = validate_session_id(session_id)
+        user_id = self._validate_owner_user_id(user_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM agent_sessions WHERE session_id=? AND owner_user_id=?",
+                (session_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def delete_owned_session(self, session_id: str, user_id: str) -> bool:
+        session_id = validate_session_id(session_id)
+        user_id = self._validate_owner_user_id(user_id)
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            deleted = connection.execute(
+                "DELETE FROM agent_sessions WHERE session_id=? AND owner_user_id=?",
+                (session_id, user_id),
+            )
+            if deleted.rowcount != 1:
+                return False
+            connection.execute(
+                """
+                DELETE FROM agent_actions
+                WHERE task_id IN (
+                    SELECT task_id FROM agent_task_controls WHERE session_id=?
+                )
+                """,
+                (session_id,),
+            )
+            connection.execute("DELETE FROM agent_task_controls WHERE session_id=?", (session_id,))
+            connection.execute("DELETE FROM agent_task_commits WHERE session_id=?", (session_id,))
+            self._sessions.pop(session_id, None)
+            return True
 
     def delete_session(self, session_id: str) -> None:
         session_id = validate_session_id(session_id)

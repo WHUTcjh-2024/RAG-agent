@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from app.api.chat import get_memory, get_orchestrator
-from app.core.agent.errors import AgentException, classify_exception
+from app.api.chat import get_memory, get_orchestrator, require_trusted_user_id
+from app.core.agent.errors import AgentException, classify_exception, invalid_input
 from app.core.agent.memory import validate_session_id
 
 router = APIRouter(tags=["commerce"])
@@ -36,7 +36,10 @@ def compare(request: Request, payload: CompareRequest) -> dict:
 @router.post("/session")
 def session_state(request: Request, payload: SessionRequest) -> dict:
     session_id = validate_session_id(payload.session_id)
+    user_id = require_trusted_user_id(request)
     memory = get_memory()
+    if not memory.is_session_owned_by(session_id, user_id):
+        raise invalid_input("Session not found.", status_code=404, stage="authorize_session")
     state = memory.get(session_id)
     return {
         "request_id": request.state.request_id,
