@@ -5,6 +5,22 @@ server:
 rag:
   upstream-base-url: ${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}
 
+tryon:
+  inference-base-url: ${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}
+  internal-token: ${AGENT_INTERNAL_TOKEN:}
+  worker-count: ${TRYON_WORKER_COUNT:4}
+  queue-capacity: ${TRYON_QUEUE_CAPACITY:128}
+  max-attempts: ${TRYON_MAX_ATTEMPTS:3}
+  rate-limit-count: ${TRYON_RATE_LIMIT_COUNT:10}
+  rate-limit-window: ${TRYON_RATE_LIMIT_WINDOW:10m}
+  result-ttl: ${TRYON_RESULT_TTL:24h}
+  saved-result-ttl: ${TRYON_SAVED_RESULT_TTL:168h}
+  provider-timeout: ${TRYON_PROVIDER_TIMEOUT:90s}
+  processing-lease: ${TRYON_PROCESSING_LEASE:2m}
+  poll-interval-ms: ${TRYON_POLL_INTERVAL_MS:200}
+  recovery-interval-ms: ${TRYON_RECOVERY_INTERVAL_MS:30000}
+  result-signing-secret: ${VTO_RESULT_SIGNING_SECRET:replace-with-a-random-result-url-signing-secret}
+
 catalog:
   upstream-base-url: ${CATALOG_UPSTREAM_BASE_URL:${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}}
   request-timeout: ${CATALOG_REQUEST_TIMEOUT:3s}
@@ -44,7 +60,7 @@ spring:
         - id: python-api
           uri: ${rag.upstream-base-url}
           predicates:
-            - Path=/api/**
+            - Path=/api/request-id-probe,/api/chat,/api/session,/api/compare,/api/search/**,/api/products/**,/api/commerce/**,/api/actions/**,/api/agent/**,/api/tasks/**
         - id: python-media
           uri: ${rag.upstream-base-url}
           predicates:
