@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -179,3 +180,13 @@ def test_evaluation_rejects_catalog_self_retrieval(tmp_path: Path, monkeypatch) 
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["status"] == "invalid_evaluation_configuration"
     assert "self-retrieval" in payload["error"]
+
+
+def test_tracked_catalog_snapshot_matches_ci_evaluation_input() -> None:
+    cases = json.loads(
+        (BACKEND_DIR / "evaluation" / "cases.json").read_text(encoding="utf-8")
+    )
+    expected_sha = cases["catalog_snapshot"]["input_sha256"]
+    catalog = BACKEND_DIR / "data" / "tianchi-demo" / "articles_sample.csv"
+
+    assert hashlib.sha256(catalog.read_bytes()).hexdigest() == expected_sha
