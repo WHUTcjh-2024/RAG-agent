@@ -12,6 +12,7 @@ from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.agent.workflow_state import AgentState, validate_task_id
 from app.core.agent.wardrobe import WardrobeItem, WardrobePlanner, WardrobeSnapshot
+from app.core.agent.skills import AgentSkill, ShoppingSkillRegistry
 from app.core.request_id import normalize_request_id
 
 
@@ -152,6 +153,10 @@ class ShoppingAgentWorkflowNodes:
             lambda: self.orchestrator.classify_intent(message, bool(image_path)),
         )
         slots = state.get("slots", {})
+        skill = ShoppingSkillRegistry.resolve(
+            intent=intent.value,
+            decision_product_id=state.get("decision_product_id"),
+        )
         filters = self.orchestrator.slot_extractor.to_filters(slots)
         query = self.orchestrator.slot_extractor.enrich_query(message, slots)
         tool: str | None = None
@@ -208,8 +213,13 @@ class ShoppingAgentWorkflowNodes:
                     tool = "search_products_by_text"
                     arguments = {"query": " ".join(missing), "filters": {}, "top_k": min(12, max(6, len(missing) * 3))}
 
+        if not ShoppingSkillRegistry.permits(skill, tool):
+            raise RuntimeError(
+                f"Skill {skill.id}@{skill.version} does not permit tool {tool}."
+            )
         return {
             "intent": intent.value,
+            "skill": skill.model_dump(mode="json"),
             "planned_tool": tool,
             "planned_arguments": arguments,
             "missing_fields": missing_fields,
@@ -492,6 +502,11 @@ class ShoppingAgentWorkflowNodes:
             decision=state.get("decision"),
             pending_action=state.get("pending_action"),
             wardrobe_plan=state.get("wardrobe_plan"),
+            skill=(
+                AgentSkill.model_validate(state["skill"])
+                if state.get("skill")
+                else None
+            ),
         ).to_dict()
         return {
             "response": response,

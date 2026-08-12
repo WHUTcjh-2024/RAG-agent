@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.agent.decision import DecisionCard
+from app.core.agent.skills import AgentSkill
 
 
 class Intent(str, Enum):
@@ -76,6 +77,7 @@ class AgentResponse(BaseModel):
     decision: DecisionCard | None = None
     pending_action: dict[str, Any] | None = None
     wardrobe_plan: dict[str, Any] | None = None
+    skill: AgentSkill | None = None
     recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:

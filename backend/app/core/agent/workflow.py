@@ -343,6 +343,7 @@ class RecoverableShoppingAgentWorkflow:
             "decision": None,
             "wardrobe_snapshot": None,
             "wardrobe_plan": None,
+            "skill": None,
         }
 
     @staticmethod
@@ -516,3 +517,48 @@ class RecoverableShoppingAgentWorkflow:
     def get_task_state(self, task_id: str) -> AgentState:
         config = self._config(validate_task_id(task_id))
         return dict(self.graph.get_state(config).values)
+
+    def get_replay(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        trusted_user_id: str | None,
+    ) -> dict[str, Any]:
+        """Return a privacy-safe task replay for debugging and evaluation.
+
+        Raw prompts, generated text, images and user body data stay out of the
+        replay. The result contains only execution metadata, facts references
+        and the structured outcome already returned to the requesting user.
+        """
+        task_id = validate_task_id(task_id)
+        session_id = validate_session_id(session_id)
+        state = self.get_task_state(task_id)
+        if not state or state.get("session_id") != session_id:
+            raise invalid_input(
+                "Task does not belong to this session.", status_code=404
+            )
+        if (
+            state.get("trusted_context")
+            and state.get("trusted_user_id") != trusted_user_id
+        ):
+            raise invalid_input("Trusted user context is required.", status_code=401)
+        response = state.get("response", {})
+        pending = response.get("pending_action") if isinstance(response, dict) else None
+        return {
+            "task_id": task_id,
+            "request_id": state.get("request_id"),
+            "status": state.get("status"),
+            "intent": state.get("intent"),
+            "skill": state.get("skill"),
+            "nodes": state.get("node_trace", []),
+            "tools": state.get("tool_trace", []),
+            "context_refs": state.get("context_refs", {}),
+            "evidence": state.get("evidence", []),
+            "outcome": {
+                "candidate_count": len(state.get("candidate_products", [])),
+                "comparison_count": len(state.get("comparison", [])),
+                "decision_verdict": (state.get("decision") or {}).get("verdict"),
+                "confirmation_required": bool(pending),
+            },
+        }
