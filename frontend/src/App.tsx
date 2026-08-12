@@ -40,7 +40,7 @@ import { useTranslation } from "./i18n";
 import { useMotionSystem } from "./motion/MotionSystem";
 import { PageTransition } from "./motion/PageTransition";
 import { motionTokens } from "./motion/tokens";
-import { useAppStore } from "./store/useAppStore";
+import { sessionIdForUser, useAppStore } from "./store/useAppStore";
 import type { AgentNodeEvent, AgentPhase, DecisionEvidence, OrderDetail, Product, ProductFacets, ProductQuery } from "./types";
 
 type ViewTransitionDocument = Document & { startViewTransition?: (update: () => void) => { finished: Promise<void> } };
@@ -107,16 +107,24 @@ export default function App() {
     fetchProducts({ page: 1, pageSize: 6, category: "Dress", sort: "popular" })
       .then((page) => setEditorialProducts(page.items))
       .catch(() => undefined);
-    fetchSession(store.sessionId).then((session) => {
-      const currentState = useAppStore.getState();
-      if (currentState.messages.length === 0) {
-        currentState.setSlots(session.slots);
-        currentState.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
-      }
-    }).catch(() => undefined);
     if (store.accessToken) {
       Promise.all([fetchCurrentUser(store.accessToken), fetchCart(store.accessToken)])
-        .then(([user, cart]) => { store.setAuth(store.accessToken, user); store.setCart(cart); })
+        .then(async ([user, cart]) => {
+          const sessionId = sessionIdForUser(user.id);
+          store.setAuth(store.accessToken, user);
+          store.setSessionId(sessionId);
+          store.setCart(cart);
+          try {
+            const session = await fetchSession(store.accessToken, sessionId);
+            const currentState = useAppStore.getState();
+            if (currentState.messages.length === 0) {
+              currentState.setSlots(session.slots);
+              currentState.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
+            }
+          } catch {
+            // A newly generated user session has no saved state yet.
+          }
+        })
         .catch(() => store.setAuth("", null));
       fetchWardrobe(store.accessToken).then(store.setWardrobe).catch(() => undefined);
     }
@@ -280,10 +288,29 @@ export default function App() {
 
   const authenticate = async (mode: "login" | "register", credentials: { email: string; password: string; displayName?: string }) => {
     const result = mode === "login" ? await login(credentials.email, credentials.password) : await register(credentials.email, credentials.password, credentials.displayName || "");
-    store.setAuth(result.accessToken, result.user); store.setCart(await fetchCart(result.accessToken)); setAuthOpen(false); setNotice(t("authSuccess"));
+    store.setAuth(result.accessToken, result.user);
+    store.setSessionId(sessionIdForUser(result.user.id));
+    store.setMessages([]);
+    store.setSlots({});
+    store.setCart(await fetchCart(result.accessToken));
+    try {
+      const session = await fetchSession(result.accessToken, useAppStore.getState().sessionId);
+      store.setSlots(session.slots);
+      store.setMessages(session.history.map((item) => ({ ...item, id: createClientId() })));
+    } catch {
+      // A newly generated user session has no saved state yet.
+    }
+    setAuthOpen(false); setNotice(t("authSuccess"));
   };
 
-  const logout = () => { store.setAuth("", null); setCartOpen(false); setNotice(t("loggedOut")); };
+  const logout = () => {
+    store.setAuth("", null);
+    store.setSessionId(`web-${createClientId()}`);
+    store.setMessages([]);
+    store.setSlots({});
+    setCartOpen(false);
+    setNotice(t("loggedOut"));
+  };
   const changeCartQuantity = async (itemId: string, quantity: number) => {
     if (!store.accessToken || updatingCartItemId) return;
     setUpdatingCartItemId(itemId);

@@ -13,7 +13,7 @@ from app.api.chat import router as chat_router
 from app.api.commerce import router as commerce_router
 from app.api.products import router as products_router
 from app.api.search import router as search_router
-from app.api.try_on import get_try_on_service, router as try_on_router
+from app.api.try_on import internal_router as try_on_internal_router
 from app.core.agent.errors import AgentException, invalid_input
 from app.core.catalog_paths import (
     get_catalog_image_dir,
@@ -21,6 +21,7 @@ from app.core.catalog_paths import (
     get_text_index_dir,
 )
 from app.core.request_id import RequestIdMiddleware, create_request_id
+from app.mcp.server import TrustedMcpContextMiddleware, get_mcp_server
 from app.db.database import get_db_path
 
 
@@ -41,7 +42,6 @@ if not app_logger.handlers:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await get_try_on_service().recover()
     yield
 
 
@@ -63,7 +63,10 @@ app.include_router(search_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(commerce_router, prefix="/api")
-app.include_router(try_on_router, prefix="/api")
+app.include_router(try_on_internal_router)
+mcp_app = get_mcp_server().streamable_http_app()
+mcp_app.add_middleware(TrustedMcpContextMiddleware)
+app.mount("/mcp", mcp_app)
 
 IMAGE_DIR = get_catalog_image_dir()
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)

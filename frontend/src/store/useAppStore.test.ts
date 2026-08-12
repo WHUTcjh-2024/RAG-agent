@@ -15,11 +15,13 @@ describe("useAppStore", () => {
     vi.stubGlobal("crypto", {});
     vi.stubGlobal("localStorage", localStorage);
 
-    const { useAppStore } = await import("./useAppStore");
+    const { sessionIdForUser, useAppStore } = await import("./useAppStore");
 
     expect(useAppStore.getState().sessionId).toMatch(/^web-[a-z0-9]+-[a-z0-9]+$/);
+    const sessionId = sessionIdForUser("user-1");
+    expect(sessionId).toMatch(/^web-[a-z0-9]+-[a-z0-9]+$/);
     expect(localStorage.setItem).toHaveBeenCalledWith(
-      "atelier-session",
+      "atelier-session:user-1",
       expect.stringMatching(/^web-[a-z0-9]+-[a-z0-9]+$/)
     );
   });

@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import sqlite3
 import sys
-import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -102,83 +101,40 @@ def _payload() -> dict[str, object]:
     }
 
 
-def test_synthetic_try_on_is_authorized_idempotent_and_controllable(tmp_path: Path, monkeypatch) -> None:
+def test_internal_render_bridge_requires_service_credential(tmp_path: Path, monkeypatch) -> None:
     database, image_dir = _catalog(tmp_path)
     provider = _FakeProvider()
     service = _service(tmp_path, provider)
     monkeypatch.setenv("CATALOG_DB_PATH", str(database))
     monkeypatch.setenv("CATALOG_IMAGE_DIR", str(image_dir))
-    monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "trusted-test-token")
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "internal-test-token")
     monkeypatch.setattr(try_on, "get_try_on_service", lambda: service)
-    headers = {
-        "X-Trusted-User-Id": "user-1",
-        "X-Agent-Context-Token": "trusted-test-token",
-        "Idempotency-Key": "try-on-idempotency-0001",
-    }
 
     with TestClient(app) as client:
-        denied = client.post("/api/try-on/jobs", json=_payload())
+        denied = client.post("/internal/try-on/render", json={**_payload(), "job_id": "try-on-1"})
         assert denied.status_code == 401
 
-        created = client.post("/api/try-on/jobs", headers=headers, json=_payload())
-        assert created.status_code == 202
-        job_id = created.json()["id"]
-        assert created.json()["category"] == "dress"
-        assert created.json()["model"]["uses_person_photo"] is False
-        assert "photo_quality" not in created.json()
-
-        repeated = client.post("/api/try-on/jobs", headers=headers, json=_payload())
-        assert repeated.status_code == 200
-        assert repeated.json()["id"] == job_id
-
-        result = created.json()
-        for _ in range(30):
-            time.sleep(0.02)
-            result = client.get(f"/api/try-on/jobs/{job_id}", headers=headers).json()
-            if result["status"] == "SUCCEEDED":
-                break
-        assert result["status"] == "SUCCEEDED"
+        rendered = client.post(
+            "/internal/try-on/render",
+            headers={"X-Agent-Internal-Token": "internal-test-token"},
+            json={**_payload(), "job_id": "try-on-1"},
+        )
+        assert rendered.status_code == 200
+        assert rendered.headers["content-type"].startswith("image/jpeg")
         assert provider.profile is not None and provider.profile.height_cm == 168
 
-        image = client.get(result["result"]["url"])
-        assert image.status_code == 200
-        assert image.headers["x-ai-generated"] == "synthetic-virtual-model"
 
-        recent = client.get("/api/try-on/jobs", headers=headers).json()["items"]
-        assert [item["id"] for item in recent] == [job_id]
-
-        saved = client.post(f"/api/try-on/jobs/{job_id}/save", headers=headers, json={"saved": True})
-        assert saved.status_code == 200
-        assert saved.json()["saved"] is True
-
-        feedback = client.post(
-            f"/api/try-on/jobs/{job_id}/feedback",
-            headers=headers,
-            json={"rating": 5, "issues": []},
-        )
-        assert feedback.status_code == 200
-        assert feedback.json()["feedback"] == {"rating": 5, "issues": []}
-
-        share = client.post(f"/api/try-on/jobs/{job_id}/share", headers=headers)
-        assert share.status_code == 200
-        assert share.json()["url"].startswith(f"/api/try-on/jobs/{job_id}/result?")
-
-        deleted = client.delete(f"/api/try-on/jobs/{job_id}", headers=headers)
-        assert deleted.status_code == 204
-        assert client.get(f"/api/try-on/jobs/{job_id}", headers=headers).status_code == 404
-
-
-def test_body_profile_rejects_impossible_values(tmp_path: Path, monkeypatch) -> None:
+def test_internal_render_bridge_rejects_impossible_body_values(tmp_path: Path, monkeypatch) -> None:
     database, image_dir = _catalog(tmp_path)
     service = _service(tmp_path, _FakeProvider())
     monkeypatch.setenv("CATALOG_DB_PATH", str(database))
     monkeypatch.setenv("CATALOG_IMAGE_DIR", str(image_dir))
-    monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "trusted-test-token")
+    monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "internal-test-token")
     monkeypatch.setattr(try_on, "get_try_on_service", lambda: service)
     payload = _payload()
     payload["body_profile"] = {**payload["body_profile"], "height_cm": 80}  # type: ignore[dict-item]
-    headers = {"X-Trusted-User-Id": "user-1", "X-Agent-Context-Token": "trusted-test-token"}
+    headers = {"X-Agent-Internal-Token": "internal-test-token"}
 
     with TestClient(app) as client:
-        response = client.post("/api/try-on/jobs", headers=headers, json=payload)
+        response = client.post("/internal/try-on/render", headers=headers, json={**payload, "job_id": "try-on-1"})
     assert response.status_code == 422

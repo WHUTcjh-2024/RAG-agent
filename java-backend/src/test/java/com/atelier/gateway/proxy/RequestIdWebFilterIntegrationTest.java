@@ -3,7 +3,10 @@ package com.atelier.gateway.proxy;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.atelier.gateway.common.RequestIdWebFilter;
+import com.atelier.gateway.security.JwtTokenService;
+import com.atelier.gateway.security.TrustedAgentContextFilter;
 import java.io.IOException;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -14,6 +17,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -25,6 +30,9 @@ class RequestIdWebFilterIntegrationTest {
 
     @Autowired
     private WebTestClient webTestClient;
+
+    @Autowired
+    private JwtTokenService tokenService;
 
     @BeforeAll
     static void startUpstream() throws IOException {
@@ -40,6 +48,7 @@ class RequestIdWebFilterIntegrationTest {
     @DynamicPropertySource
     static void gatewayProperties(DynamicPropertyRegistry registry) {
         registry.add("rag.upstream-base-url", () -> upstream.url("/").toString());
+        registry.add("agent.internal-token", () -> "test-agent-context-token");
     }
 
     @Test
@@ -94,5 +103,33 @@ class RequestIdWebFilterIntegrationTest {
         assertThat(request).isNotNull();
         assertThat(request.getHeader(RequestIdWebFilter.REQUEST_ID_HEADER))
             .isEqualTo("proxy-request-123");
+    }
+
+    @Test
+    void forwardsVerifiedSessionOwnerContextToPythonUpstream() throws Exception {
+        UUID userId = UUID.randomUUID();
+        upstream.enqueue(
+            new MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"session_id\":\"owned-session\"}")
+        );
+
+        webTestClient.post()
+            .uri("/api/session")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenService.createAccessToken(userId))
+            .header(TrustedAgentContextFilter.TRUSTED_USER_ID_HEADER, "spoofed-user")
+            .header(TrustedAgentContextFilter.CONTEXT_TOKEN_HEADER, "spoofed-token")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("{\"session_id\":\"owned-session\"}")
+            .exchange()
+            .expectStatus().isOk();
+
+        RecordedRequest request = upstream.takeRequest(1, TimeUnit.SECONDS);
+        assertThat(request).isNotNull();
+        assertThat(request.getHeader(TrustedAgentContextFilter.TRUSTED_USER_ID_HEADER))
+            .isEqualTo(userId.toString());
+        assertThat(request.getHeader(TrustedAgentContextFilter.CONTEXT_TOKEN_HEADER))
+            .isEqualTo("test-agent-context-token");
     }
 }
