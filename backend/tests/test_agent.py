@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import sys
 from pathlib import Path
 
@@ -11,7 +13,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.api.chat import get_orchestrator
+from app.api.chat import get_memory, get_orchestrator, reset_workflow
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.llm import (
     GroundedRecommendation,
@@ -133,41 +135,100 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("IMAGE_INDEX_DIR", str(image_index))
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("SESSION_DB_PATH", str(tmp_path / "sessions.db"))
+    monkeypatch.setenv("AGENT_CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.db"))
+    monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "test-agent-context-token")
+    get_memory.cache_clear()
     get_orchestrator.cache_clear()
+    reset_workflow()
+    owner_headers = {
+        "X-Agent-Context-Token": "test-agent-context-token",
+        "X-Trusted-User-Id": "owner-a",
+    }
+    other_owner_headers = {
+        "X-Agent-Context-Token": "test-agent-context-token",
+        "X-Trusted-User-Id": "owner-b",
+    }
 
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/chat",
-            data={"message": "推荐一件红色衬衫", "session_id": "api-agent"},
-        )
-        assert response.status_code == 200, response.text
-        payload = response.json()
-        assert payload["request_id"]
-        assert payload["products"][0]["article_id"] == "0000000001"
-        assert payload["tool_trace"][-1]["tool"] == "search_products_by_text"
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/chat",
+                data={"message": "推荐一件红色衬衫", "session_id": "api-agent"},
+                headers=owner_headers,
+            )
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["request_id"]
+            assert payload["products"][0]["article_id"] == "0000000001"
+            assert payload["tool_trace"][-1]["tool"] == "search_products_by_text"
 
-        english = client.post(
-            "/api/chat",
-            data={"message": "Recommend a red shirt", "session_id": "api-en", "language": "en"},
-        )
-        assert english.status_code == 200
-        assert english.json()["answer"] == "I selected these candidates from the real product catalog."
+            english = client.post(
+                "/api/chat",
+                data={"message": "Recommend a red shirt", "session_id": "api-en", "language": "en"},
+                headers=owner_headers,
+            )
+            assert english.status_code == 200
+            assert english.json()["answer"] == "I selected these candidates from the real product catalog."
 
-        restored = client.post("/api/session", json={"session_id": "api-agent"})
-        assert restored.status_code == 200
-        assert restored.json()["slots"] == {"color": "Red", "category": "Shirt"}
-        assert restored.json()["history"]
+            restored = client.post(
+                "/api/session", json={"session_id": "api-agent"}, headers=owner_headers
+            )
+            assert restored.status_code == 200
+            assert restored.json()["slots"] == {"color": "Red", "category": "Shirt"}
+            assert restored.json()["history"]
 
-        stream = client.post(
-            "/api/chat/stream",
-            data={"message": "继续推荐红色衬衫", "session_id": "api-agent"},
-        )
-        assert stream.status_code == 200
-        assert "event: meta" in stream.text
-        assert "event: tool" in stream.text
-        assert "event: done" in stream.text
-        assert stream.headers["X-Request-Id"]
-    get_orchestrator.cache_clear()
+            assert client.post("/api/session", json={"session_id": "api-agent"}).status_code == 401
+            assert client.post(
+                "/api/session", json={"session_id": "api-agent"}, headers=other_owner_headers
+            ).status_code == 404
+            assert client.post(
+                "/api/chat", data={"message": "Recommend a red shirt", "session_id": "api-agent"},
+                headers=other_owner_headers,
+            ).status_code == 404
+
+            get_memory().add_user_message("legacy-session", "legacy data")
+            assert client.post(
+                "/api/chat", data={"message": "Recommend a red shirt", "session_id": "legacy-session"},
+                headers=owner_headers,
+            ).status_code == 404
+
+            anonymous = client.post(
+                "/api/chat",
+                data={
+                    "message": "Recommend a red shirt",
+                    "session_id": "api-agent",
+                    "task_id": "attacker-controlled-task",
+                },
+            )
+            assert anonymous.status_code == 200
+            assert anonymous.json()["session_id"] != "api-agent"
+            assert anonymous.json()["task_id"] != "attacker-controlled-task"
+            assert client.post(
+                "/api/session", json={"session_id": "api-agent"}, headers=owner_headers
+            ).status_code == 200
+
+            stream = client.post(
+                "/api/chat/stream",
+                data={"message": "继续推荐红色衬衫", "session_id": "api-agent"},
+                headers=owner_headers,
+            )
+            assert stream.status_code == 200
+            assert "event: meta" in stream.text
+            assert "event: tool" in stream.text
+            assert "event: done" in stream.text
+            assert stream.headers["X-Request-Id"]
+
+            assert client.delete("/api/session/api-agent").status_code == 401
+            assert client.delete("/api/session/api-agent", headers=other_owner_headers).status_code == 404
+            assert client.delete("/api/session/api-agent", headers=owner_headers).status_code == 200
+            assert client.post(
+                "/api/session", json={"session_id": "api-agent"}, headers=owner_headers
+            ).status_code == 404
+    finally:
+        reset_workflow()
+        get_orchestrator.cache_clear()
+        get_memory.cache_clear()
 
 
 def test_text_agent_works_without_optional_image_index(

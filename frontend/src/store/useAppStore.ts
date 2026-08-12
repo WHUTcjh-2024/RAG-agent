@@ -2,10 +2,17 @@ import { create } from "zustand";
 import type { CartItem, DecisionCard, Message, PendingCartAction, Product, Slots, ToolTrace, User, WardrobePlan, WardrobeSnapshot } from "../types";
 import { createClientId } from "../utils/clientId";
 
-const sessionId =
-  localStorage.getItem("atelier-session") || `web-${createClientId()}`;
-localStorage.setItem("atelier-session", sessionId);
+const sessionId = `web-${createClientId()}`;
 const accessToken = localStorage.getItem("atelier-access-token") || "";
+
+export function sessionIdForUser(userId: string): string {
+  const key = `atelier-session:${userId}`;
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const created = `web-${createClientId()}`;
+  localStorage.setItem(key, created);
+  return created;
+}
 
 type AppState = {
   sessionId: string;
@@ -30,6 +37,7 @@ type AppState = {
   addTrace: (trace: ToolTrace) => void;
   resetExecution: () => void;
   setSlots: (slots: Slots) => void;
+  setSessionId: (sessionId: string) => void;
   setAuth: (accessToken: string, user: User | null) => void;
   setCart: (cart: CartItem[]) => void;
   toggleCompare: (id: string) => void;
@@ -72,6 +80,7 @@ export const useAppStore = create<AppState>((set) => ({
   addTrace: (trace) => set((state) => ({ traces: [...state.traces, trace].slice(-8) })),
   resetExecution: () => set({ traces: [], comparison: [], decision: null, pendingAction: null, wardrobePlan: null }),
   setSlots: (slots) => set({ slots }),
+  setSessionId: (sessionId) => set({ sessionId }),
   setAuth: (token, user) => {
     if (token) localStorage.setItem("atelier-access-token", token);
     else localStorage.removeItem("atelier-access-token");
