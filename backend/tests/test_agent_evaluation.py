@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -189,4 +188,6 @@ def test_tracked_catalog_snapshot_matches_ci_evaluation_input() -> None:
     expected_sha = cases["catalog_snapshot"]["input_sha256"]
     catalog = BACKEND_DIR / "data" / "tianchi-demo" / "articles_sample.csv"
 
-    assert hashlib.sha256(catalog.read_bytes()).hexdigest() == expected_sha
+    from scripts.build_text_index import file_sha256
+
+    assert file_sha256(catalog) == expected_sha

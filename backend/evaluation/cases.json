@@ -1,6 +1,6 @@
 {
   "catalog_snapshot": {
-    "input_sha256": "6d0bd10268da18baac53e732cb731f4b92e4a4796424074ecce6f549b4369a76",
+    "input_sha256": "5dfeb404acf1ae255417c0270e68f3d8996a20c144223961d212373421ffb702",
     "label_source": "tracked tianchi-demo catalog, manually reviewed"
   },
   "labeled_retrieval": [
