@@ -1,0 +1,33 @@
+{
+  "version": "v1",
+  "cases": [
+    {
+      "id": "catalog_search",
+      "kind": "catalog_search",
+      "message": "recommend a red shirt",
+      "expected_intent": "text_recommendation",
+      "expected_skill": "catalog_retrieval",
+      "required_tools": ["search_products_by_text"],
+      "required_nodes": ["understand_request", "plan_tools", "retrieve_candidates", "verify_constraints", "build_evidence", "complete"]
+    },
+    {
+      "id": "product_comparison",
+      "kind": "product_comparison",
+      "message": "compare {first_product_id} and {second_product_id}",
+      "expected_intent": "compare",
+      "expected_skill": "product_comparison",
+      "required_tools": ["compare_products"],
+      "required_nodes": ["plan_tools", "retrieve_candidates", "verify_constraints", "complete"]
+    },
+    {
+      "id": "purchase_handoff",
+      "kind": "purchase_handoff",
+      "message": "add {first_product_id} to cart",
+      "expected_intent": "cart_handoff",
+      "expected_skill": "purchase_handoff",
+      "required_tools": ["get_product_detail"],
+      "required_nodes": ["plan_tools", "retrieve_candidates", "generate_answer", "wait_for_confirmation", "complete"],
+      "requires_confirmation": true
+    }
+  ]
+}

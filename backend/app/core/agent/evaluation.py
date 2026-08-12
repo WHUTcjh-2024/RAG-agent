@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Executable, privacy-safe agent evaluation primitives.
 
 The evaluator deliberately stores case fingerprints and check outcomes instead of
 prompts, catalog documents, or model responses.  It can therefore be persisted as
 a trace artifact without widening the agent's data-retention surface.
 """
+
+from __future__ import annotations
 
 import hashlib
 import json

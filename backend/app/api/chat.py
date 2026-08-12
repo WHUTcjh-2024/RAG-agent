@@ -56,6 +56,10 @@ class TaskCancellationRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=100)
 
 
+class TaskReplayRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100)
+
+
 @lru_cache(maxsize=1)
 def get_memory() -> AgentMemoryStore:
     return AgentMemoryStore()
@@ -401,6 +405,7 @@ async def chat_stream(
                     "intent": response["intent"],
                     "slots": response["slots"],
                     "recovered": response["recovered"],
+                    "skill": response.get("skill"),
                 },
             )
             for trace in response["tool_trace"]:
@@ -479,6 +484,24 @@ async def cancel_task(
         trusted_user_id=trusted_user_id_from(request),
     )
     return {"ok": cancelled}
+
+
+@router.post("/tasks/{task_id}/replay")
+async def replay_task(
+    task_id: str,
+    payload: TaskReplayRequest,
+    request: Request,
+) -> dict:
+    orchestrator = get_orchestrator()
+    if not workflow_enabled() or not isinstance(
+        orchestrator, ShoppingAgentOrchestrator
+    ):
+        raise invalid_input("Agent workflow replay is unavailable.", status_code=409)
+    return get_workflow(orchestrator).get_replay(
+        task_id=task_id,
+        session_id=payload.session_id,
+        trusted_user_id=trusted_user_id_from(request),
+    )
 
 
 @router.delete("/session/{session_id}")
