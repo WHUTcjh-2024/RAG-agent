@@ -10,6 +10,7 @@ from app.core.agent.actions import create_cart_confirmation
 from app.core.agent.errors import AgentException, invalid_input
 from app.core.agent.memory import validate_session_id
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
+from app.core.agent.planner import ReActDecision
 from app.core.agent.workflow_state import AgentState, validate_task_id
 from app.core.agent.wardrobe import WardrobeItem, WardrobePlanner, WardrobeSnapshot
 from app.core.request_id import normalize_request_id
@@ -29,6 +30,7 @@ class ShoppingAgentWorkflowNodes:
             "load_context": self.load_context,
             "plan_tools": self.plan_tools,
             "retrieve_candidates": self.retrieve_candidates,
+            "observe_and_replan": self.observe_and_replan,
             "verify_constraints": self.verify_constraints,
             "build_evidence": self.build_evidence,
             "generate_answer": self.generate_answer,
@@ -51,6 +53,9 @@ class ShoppingAgentWorkflowNodes:
                 updates.get("candidate_products", []) or updates.get("comparison", [])
             )
             return f"retrieved {count} catalog products"
+        if node == "observe_and_replan":
+            reason = updates.get("react_stop_reason")
+            return f"stopped ReAct loop: {reason}" if reason else "observed tool result and replanned"
         if node == "verify_constraints":
             return f"verified {len(updates.get('candidate_products', []))} candidates"
         if node == "build_evidence":
@@ -227,7 +232,9 @@ class ShoppingAgentWorkflowNodes:
                 "status": "retrieved",
             }
 
-        traces: list[ToolTrace] = []
+        traces: list[ToolTrace] = [
+            ToolTrace.model_validate(trace) for trace in state.get("tool_trace", [])
+        ]
         result = self.orchestrator._invoke(
             traces,
             tool,
@@ -257,17 +264,136 @@ class ShoppingAgentWorkflowNodes:
                 for product in products
                 if str(product.get("article_id")) != decision_product_id
             ]
+        prior_products = state.get("candidate_products", [])
+        product_by_id = {
+            str(product.get("article_id")): product
+            for product in [*prior_products, *products]
+            if product.get("article_id")
+        }
+        prior_comparison = state.get("comparison", [])
+        comparison_by_id = {
+            str(product.get("article_id")): product
+            for product in [*prior_comparison, *comparison]
+            if product.get("article_id")
+        }
+        tool_results = dict(state.get("tool_results", {}))
+        tool_results[f"{state.get('react_step', 0)}:{tool}"] = {
+            "count": count,
+            "total_candidates": result.get("total_candidates", count),
+        }
         return {
-            "candidate_products": products,
-            "comparison": comparison,
-            "tool_results": {
-                tool: {
-                    "count": count,
-                    "total_candidates": result.get("total_candidates", count),
-                }
-            },
+            "candidate_products": list(product_by_id.values()),
+            "comparison": list(comparison_by_id.values()),
+            "tool_results": tool_results,
             "tool_trace": [trace.model_dump(mode="json") for trace in traces],
             "status": "retrieved",
+        }
+
+    def observe_and_replan(self, state: AgentState) -> AgentState:
+        """Use the latest tool observation to choose a safe next action or finish."""
+        step = int(state.get("react_step", 0)) + 1
+        products = state.get("candidate_products", [])
+        comparison = state.get("comparison", [])
+        observation = {
+            "step": step,
+            "tool": state.get("planned_tool"),
+            "product_ids": [
+                str(product["article_id"])
+                for product in [*products, *comparison]
+                if product.get("article_id")
+            ],
+            "candidate_count": len(products) + len(comparison),
+        }
+        observations = [*state.get("react_observations", []), observation]
+        max_steps = int(state.get("react_max_steps", 1))
+        intent = Intent(state["intent"])
+
+        if step >= max_steps:
+            return self._stop_react(step, observations, "max_steps_reached")
+        if intent not in {
+            Intent.TEXT_RECOMMENDATION,
+            Intent.IMAGE_SEARCH,
+            Intent.HYBRID_SEARCH,
+        }:
+            return self._stop_react(step, observations, "intent_complete")
+        query = self.orchestrator.slot_extractor.enrich_query(
+            state["message"], state.get("slots", {})
+        )
+        filters = self.orchestrator.slot_extractor.to_filters(state.get("slots", {}))
+        observed_ids = set(observation["product_ids"])
+
+        def fallback() -> ReActDecision:
+            if products:
+                return ReActDecision(action="finish")
+            return ReActDecision(action="tool", tool="search_products_by_text", query=query)
+
+        decision = self.orchestrator.planner.replan(
+            message=state["message"],
+            has_image=bool(state.get("image_path")),
+            observations=observations,
+            allowed_tools=set(self.orchestrator.registry.names),
+            fallback=fallback,
+        )
+        if decision.action == "finish":
+            return self._stop_react(step, observations, "sufficient_evidence")
+        action = self._react_action(
+            decision=decision,
+            query=query,
+            filters=filters,
+            image_path=state.get("image_path"),
+            observed_ids=observed_ids,
+        )
+        if action is None:
+            return self._stop_react(step, observations, "invalid_replan")
+        tool, arguments = action
+        return {
+            "react_step": step,
+            "react_observations": observations,
+            "react_stop_reason": None,
+            "planned_tool": tool,
+            "planned_arguments": arguments,
+            "status": "replanned",
+        }
+
+    @staticmethod
+    def _react_action(
+        *,
+        decision: ReActDecision,
+        query: str,
+        filters: dict[str, Any],
+        image_path: str | None,
+        observed_ids: set[str],
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Map a model decision to catalog-only, schema-valid tool arguments."""
+        tool = decision.tool
+        if tool == "search_products_by_text":
+            return tool, {"query": decision.query or query, "filters": filters, "top_k": 10}
+        if tool == "search_products_by_image" and image_path:
+            return tool, {"image_path": str(image_path), "filters": filters, "top_k": 10}
+        if tool == "hybrid_search" and image_path:
+            return tool, {
+                "query": decision.query or query,
+                "image_path": str(image_path),
+                "filters": filters,
+                "top_k": 10,
+            }
+        product_ids = [product_id for product_id in decision.product_ids if product_id in observed_ids]
+        if tool == "get_product_detail" and len(product_ids) == 1:
+            return tool, {"product_id": product_ids[0]}
+        if tool == "compare_products" and 2 <= len(product_ids) <= 3:
+            return tool, {"product_ids": product_ids}
+        return None
+
+    @staticmethod
+    def _stop_react(
+        step: int, observations: list[dict[str, Any]], reason: str
+    ) -> AgentState:
+        return {
+            "react_step": step,
+            "react_observations": observations,
+            "react_stop_reason": reason,
+            "planned_tool": None,
+            "status": "observed",
         }
 
     def verify_constraints(self, state: AgentState) -> AgentState:
