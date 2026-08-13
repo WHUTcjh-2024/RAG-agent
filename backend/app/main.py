@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.chat import router as chat_router
@@ -15,6 +15,7 @@ from app.api.products import router as products_router
 from app.api.search import router as search_router
 from app.api.try_on import internal_router as try_on_internal_router
 from app.core.agent.errors import AgentException, invalid_input
+from app.core.agent.metrics import metrics
 from app.core.catalog_paths import (
     get_catalog_image_dir,
     get_image_index_dir,
@@ -39,6 +40,7 @@ if not app_logger.handlers:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     )
     app_logger.addHandler(app_handler)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -71,6 +73,12 @@ app.mount("/mcp", mcp_app)
 IMAGE_DIR = get_catalog_image_dir()
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=IMAGE_DIR), name="media")
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics():
+    """Scrape endpoint intentionally exposes aggregate, low-cardinality SLI data only."""
+    return Response(content=metrics.render(), media_type=metrics.content_type)
 
 
 def request_id_from(request: Request) -> str:
@@ -106,7 +114,9 @@ async def validation_exception_handler(
             status_code=422,
             content=envelope.model_dump(mode="json"),
         )
-    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(error.errors())})
+    return JSONResponse(
+        status_code=422, content={"detail": jsonable_encoder(error.errors())}
+    )
 
 
 @app.get("/health")

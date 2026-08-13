@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import sys
 from pathlib import Path
 
@@ -34,7 +36,9 @@ def test_preferences_drive_semantics_budget_and_exclusions() -> None:
 
 
 def test_english_preferences_are_structured() -> None:
-    slots = SlotExtractor().extract("A white shirt for a casual commute, budget 0.06, avoid blue")
+    slots = SlotExtractor().extract(
+        "A white shirt for a casual commute, budget 0.06, avoid blue"
+    )
     assert slots["color"] == "White"
     assert slots["category"] == "Shirt"
     assert "casual" in slots["style"]
@@ -52,6 +56,30 @@ def test_memory_survives_store_recreation(tmp_path: Path) -> None:
     restored = AgentMemoryStore(database).get("session")
     assert restored.slots == {"color": "Red"}
     assert restored.history.messages[0].content == "红色衬衫"
+
+
+def test_commit_turn_is_idempotent_across_store_recreation(tmp_path: Path) -> None:
+    database = tmp_path / "sessions.db"
+    first = AgentMemoryStore(database)
+    assert first.commit_turn(
+        task_id="persistent-task",
+        session_id="session",
+        user_content="推荐红色衬衫",
+        assistant_content="已找到候选商品",
+        slots={"color": "Red"},
+        last_results=["0000000001"],
+    )
+
+    second = AgentMemoryStore(database)
+    assert not second.commit_turn(
+        task_id="persistent-task",
+        session_id="session",
+        user_content="推荐红色衬衫",
+        assistant_content="已找到候选商品",
+        slots={"color": "Red"},
+        last_results=["0000000001"],
+    )
+    assert len(second.recent_history("session")) == 2
 
 
 def test_commerce_fields_are_explicit_without_fabricated_inventory() -> None:
