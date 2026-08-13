@@ -10,15 +10,54 @@ from time import perf_counter
 from typing import Any, Iterator
 from contextlib import contextmanager
 
+from app.core.agent.metrics import metrics
+
 try:  # Keep local development usable when optional observability packages are absent.
     from opentelemetry import trace
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 except ImportError:  # pragma: no cover - exercised only in an incomplete local install
     trace = None  # type: ignore[assignment]
+    Resource = None  # type: ignore[assignment,misc]
     TracerProvider = None  # type: ignore[assignment,misc]
+    BatchSpanProcessor = None  # type: ignore[assignment,misc]
+    OTLPSpanExporter = None  # type: ignore[assignment,misc]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_tracer_provider():
+    """Configure OTLP once; absent endpoint means local trace-only diagnostics."""
+    if not trace or not TracerProvider:
+        return None
+    current = trace.get_tracer_provider()
+    if type(current).__name__ == "ProxyTracerProvider":
+        provider = TracerProvider(
+            resource=Resource.create(
+                {
+                    "service.name": os.getenv("OTEL_SERVICE_NAME", "atelier-agent-api"),
+                    "service.version": os.getenv("APP_VERSION", "dev"),
+                }
+            )
+        )
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        if endpoint and BatchSpanProcessor and OTLPSpanExporter:
+            insecure = endpoint.startswith("http://")
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    OTLPSpanExporter(
+                        endpoint=endpoint.removeprefix("http://").removeprefix(
+                            "https://"
+                        ),
+                        insecure=insecure,
+                    )
+                )
+            )
+        trace.set_tracer_provider(provider)
+    return trace.get_tracer_provider()
 
 
 @dataclass(frozen=True)
@@ -39,12 +78,13 @@ class AgentTelemetry:
     def __init__(self, capacity: int = 300) -> None:
         self._events: deque[TelemetryEvent] = deque(maxlen=capacity)
         self._lock = Lock()
-        if trace and TracerProvider and type(trace.get_tracer_provider()).__name__ == "ProxyTracerProvider":
-            trace.set_tracer_provider(TracerProvider())
+        _configure_tracer_provider()
         self._tracer = trace.get_tracer("atelier.agent") if trace else None
 
     @contextmanager
-    def span(self, name: str, **attributes: str | int | float | bool | None) -> Iterator[dict[str, str | int | float | bool]]:
+    def span(
+        self, name: str, **attributes: str | int | float | bool | None
+    ) -> Iterator[dict[str, str | int | float | bool]]:
         safe = {key: value for key, value in attributes.items() if value is not None}
         started = perf_counter()
         outcome = "ok"
@@ -71,14 +111,25 @@ class AgentTelemetry:
                     span.set_attribute(key, value)
             if scope:
                 scope.__exit__(*sys.exc_info())
-            event = TelemetryEvent(name=name, duration_ms=duration_ms, outcome=outcome, attributes=dict(safe))
+            event = TelemetryEvent(
+                name=name,
+                duration_ms=duration_ms,
+                outcome=outcome,
+                attributes=dict(safe),
+            )
             with self._lock:
                 self._events.append(event)
-            logger.info("agent_telemetry name=%s duration_ms=%s outcome=%s", name, duration_ms, outcome)
+            metrics.record_span(name, duration_ms, outcome)
+            logger.info(
+                "agent_telemetry name=%s duration_ms=%s outcome=%s",
+                name,
+                duration_ms,
+                outcome,
+            )
 
     def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
-            events = list(self._events)[-max(1, min(limit, 100)):]
+            events = list(self._events)[-max(1, min(limit, 100)) :]
         return [
             {
                 "name": item.name,
