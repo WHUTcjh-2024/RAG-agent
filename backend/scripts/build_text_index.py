@@ -19,7 +19,10 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.text_encoder import DEFAULT_MODEL, create_text_encoder
 from app.core.retrieval.bm25 import BM25Index
-from data_utils import DEFAULT_CATALOG_DIR, resolve_catalog_csv
+try:
+    from data_utils import DEFAULT_CATALOG_DIR, resolve_catalog_csv
+except ModuleNotFoundError:  # Supports importing the script from the test package.
+    from scripts.data_utils import DEFAULT_CATALOG_DIR, resolve_catalog_csv
 
 
 PROFILE_FIELDS = (
@@ -98,11 +101,9 @@ def read_products(path: Path) -> list[dict[str, str]]:
 
 
 def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    """Hash a text catalog independently of Git's checkout line endings."""
+    normalized = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def write_index(

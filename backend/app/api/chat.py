@@ -56,6 +56,10 @@ class TaskCancellationRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=100)
 
 
+class TaskReplayRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=100)
+
+
 @lru_cache(maxsize=1)
 def get_memory() -> AgentMemoryStore:
     return AgentMemoryStore()
@@ -170,6 +174,58 @@ def trusted_user_id_from(request: Request) -> str | None:
     return request.headers.get("X-Trusted-User-Id")
 
 
+def require_trusted_user_id(request: Request) -> str:
+    user_id = trusted_user_id_from(request)
+    if not user_id:
+        raise invalid_input(
+            "Authentication is required to access a saved session.",
+            status_code=401,
+            stage="authorize_session",
+        )
+    return user_id
+
+
+def prepare_chat_session(request: Request, requested_session_id: str) -> tuple[str, str | None, bool]:
+    """Return a session scoped to the authenticated caller.
+
+    Anonymous requests are intentionally isolated to a one-shot ephemeral session:
+    a caller-provided ID must never reopen another user's persisted conversation.
+    """
+    requested_session_id = requested_session_id.strip()
+    if requested_session_id:
+        validate_session_id(requested_session_id)
+
+    trusted_user_id = trusted_user_id_from(request)
+    if not trusted_user_id:
+        return uuid4().hex, None, True
+
+    session_id = (
+        requested_session_id
+        if requested_session_id
+        else uuid4().hex
+    )
+    if not get_memory().claim_session(session_id, trusted_user_id):
+        raise invalid_input(
+            "Session not found.", status_code=404, stage="authorize_session"
+        )
+    return session_id, trusted_user_id, False
+
+
+def prepare_task_id(requested_task_id: str, trusted_user_id: str | None) -> str:
+    requested_task_id = requested_task_id.strip()
+    if requested_task_id:
+        validate_task_id(requested_task_id)
+    if trusted_user_id and requested_task_id:
+        return requested_task_id
+    return uuid4().hex
+
+
+def discard_ephemeral_session(task_id: str, session_id: str) -> None:
+    if _workflow_instance is not None:
+        _workflow_instance.purge_tasks([task_id])
+    get_memory().delete_session(session_id)
+
+
 @router.post("/chat")
 async def chat(
     request: Request,
@@ -182,10 +238,10 @@ async def chat(
     decision_product_id: str = Form(default="", max_length=128),
 ) -> dict:
     request_id = request.state.request_id
-    actual_task_id = validate_task_id(task_id) if task_id.strip() else uuid4().hex
-    actual_session_id = (
-        validate_session_id(session_id) if session_id.strip() else uuid4().hex
+    actual_session_id, trusted_user_id, ephemeral_session = prepare_chat_session(
+        request, session_id
     )
+    actual_task_id = prepare_task_id(task_id, trusted_user_id)
     response.headers["X-Agent-Task-Id"] = actual_task_id
     image_path = await save_upload(file)
     resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
@@ -204,7 +260,7 @@ async def chat(
                 language=language,
                 request_id=request_id,
                 decision_product_id=resolved_decision_product_id,
-                trusted_user_id=trusted_user_id_from(request),
+                trusted_user_id=trusted_user_id,
             )
         else:
             result = await asyncio.to_thread(
@@ -231,6 +287,8 @@ async def chat(
         raise classified from error
     finally:
         remove_upload(image_path)
+        if ephemeral_session:
+            discard_ephemeral_session(actual_task_id, actual_session_id)
 
 
 def sse(event: SSEEvent, payload: dict) -> str:
@@ -251,10 +309,10 @@ async def chat_stream(
     decision_product_id: str = Form(default="", max_length=128),
 ) -> StreamingResponse:
     request_id = request.state.request_id
-    actual_task_id = validate_task_id(task_id) if task_id.strip() else uuid4().hex
-    actual_session_id = (
-        validate_session_id(session_id) if session_id.strip() else uuid4().hex
+    actual_session_id, trusted_user_id, ephemeral_session = prepare_chat_session(
+        request, session_id
     )
+    actual_task_id = prepare_task_id(task_id, trusted_user_id)
     image_path = await save_upload(file)
     resolved_decision_product_id = decision_product_id_from(message, decision_product_id)
 
@@ -289,7 +347,7 @@ async def chat_stream(
                                 language=language,
                                 request_id=request_id,
                                 decision_product_id=resolved_decision_product_id,
-                                trusted_user_id=trusted_user_id_from(request),
+                                trusted_user_id=trusted_user_id,
                             ):
                                 loop.call_soon_threadsafe(queue.put_nowait, item)
                         except Exception as error:
@@ -347,6 +405,7 @@ async def chat_stream(
                     "intent": response["intent"],
                     "slots": response["slots"],
                     "recovered": response["recovered"],
+                    "skill": response.get("skill"),
                 },
             )
             for trace in response["tool_trace"]:
@@ -381,6 +440,8 @@ async def chat_stream(
             )
         finally:
             remove_upload(image_path)
+            if ephemeral_session:
+                discard_ephemeral_session(actual_task_id, actual_session_id)
 
     return StreamingResponse(
         events(),
@@ -425,12 +486,35 @@ async def cancel_task(
     return {"ok": cancelled}
 
 
+@router.post("/tasks/{task_id}/replay")
+async def replay_task(
+    task_id: str,
+    payload: TaskReplayRequest,
+    request: Request,
+) -> dict:
+    orchestrator = get_orchestrator()
+    if not workflow_enabled() or not isinstance(
+        orchestrator, ShoppingAgentOrchestrator
+    ):
+        raise invalid_input("Agent workflow replay is unavailable.", status_code=409)
+    return get_workflow(orchestrator).get_replay(
+        task_id=task_id,
+        session_id=payload.session_id,
+        trusted_user_id=trusted_user_id_from(request),
+    )
+
+
 @router.delete("/session/{session_id}")
-async def delete_session(session_id: str) -> dict[str, bool]:
-    task_ids = get_memory().task_ids_for_session(session_id)
+async def delete_session(session_id: str, request: Request) -> dict[str, bool]:
+    user_id = require_trusted_user_id(request)
+    memory = get_memory()
+    task_ids = memory.task_ids_for_owned_session(session_id, user_id)
+    if task_ids is None:
+        raise invalid_input("Session not found.", status_code=404, stage="authorize_session")
     if task_ids and _workflow_instance is not None:
         _workflow_instance.purge_tasks(task_ids)
-    get_memory().delete_session(session_id)
+    if not memory.delete_owned_session(session_id, user_id):
+        raise invalid_input("Session not found.", status_code=404, stage="authorize_session")
     return {"ok": True}
 
 

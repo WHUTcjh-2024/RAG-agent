@@ -17,7 +17,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.api.chat import get_orchestrator, reset_workflow
+from app.api.chat import get_memory, get_orchestrator, reset_workflow
 from app.core.agent.errors import AgentException
 from app.core.agent.memory import AgentMemoryStore
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
@@ -108,6 +108,15 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
     assert state["react_observations"][0]["tool"] == "search_products_by_text"
     assert state["react_stop_reason"] == "sufficient_evidence"
 
+    with sqlite3.connect(tmp_path / "checkpoints.db") as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert {"checkpoints", "writes"} <= tables
+
 
 def test_react_loop_replans_after_empty_search_and_stops_at_evidence(
     tmp_path: Path,
@@ -168,15 +177,6 @@ def test_react_loop_allows_model_to_inspect_observed_product_detail(
         "get_product_detail",
     ]
     assert state["react_stop_reason"] == "sufficient_evidence"
-
-    with sqlite3.connect(tmp_path / "checkpoints.db") as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-    assert {"checkpoints", "writes"} <= tables
 
 
 class StreamingRecommendationLLM:
@@ -504,12 +504,18 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
         "AGENT_CHECKPOINT_DB_PATH",
         str(tmp_path / "api-checkpoints.db"),
     )
+    monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "test-agent-context-token")
     monkeypatch.setenv("AGENT_WORKFLOW_ENABLED", "true")
+    get_memory.cache_clear()
     get_orchestrator.cache_clear()
     reset_workflow()
 
     try:
         with TestClient(app) as client:
+            owner_headers = {
+                "X-Agent-Context-Token": "test-agent-context-token",
+                "X-Trusted-User-Id": "workflow-owner",
+            }
             streamed = client.post(
                 "/api/chat/stream",
                 data={
@@ -517,6 +523,7 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
                     "message": "推荐一件红色衬衫",
                     "session_id": "api-workflow",
                 },
+                headers=owner_headers,
             )
             assert streamed.status_code == 200
             assert streamed.headers["X-Agent-Task-Id"] == "api-node-trace"
@@ -538,6 +545,7 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
                     "message": "推荐一件红色衬衫",
                     "session_id": "api-workflow",
                 },
+                headers=owner_headers,
             )
             assert "event: node" not in duplicate.text
             assert '"recovered": true' in duplicate.text
@@ -550,6 +558,7 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
                     "message": "推荐一件红色衬衫",
                     "session_id": "legacy-workflow",
                 },
+                headers=owner_headers,
             )
             assert legacy.status_code == 200
             assert "event: node" not in legacy.text
@@ -557,6 +566,7 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
     finally:
         reset_workflow()
         get_orchestrator.cache_clear()
+        get_memory.cache_clear()
 
 
 @pytest.mark.parametrize("invalid", ["", "contains space", "a" * 101, "../task"])

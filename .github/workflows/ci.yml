@@ -15,8 +15,9 @@ jobs:
           cache: pip
       - run: pip install -r backend/requirements.txt
       - run: python -m pytest backend/tests -q
-      - run: python backend/scripts/build_text_index.py --backend hashing --index_dir /tmp/agent-evaluation-index
-      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_ndcg_at_10 0.64
+      - run: python backend/scripts/build_text_index.py --input_csv backend/data/tianchi-demo/articles_sample.csv --backend hashing --index_dir /tmp/agent-evaluation-index
+      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_ndcg_at_10 0.64 --minimum_task_success_rate 1 --minimum_tool_argument_accuracy 1 --minimum_fact_citation_coverage 1 --minimum_refusal_injection_pass_rate 1 --minimum_business_execution_pass_rate 1
+      - run: python backend/scripts/evaluate_agent_harness.py --text-index /tmp/agent-evaluation-index --report /tmp/agent-harness-evaluation.json
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

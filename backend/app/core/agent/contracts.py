@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.core.agent.decision import DecisionCard
+from app.core.agent.skills import AgentSkill
 
 
 class Intent(str, Enum):
@@ -39,6 +40,7 @@ class ErrorCode(str, Enum):
     INDEX_NOT_READY = "INDEX_NOT_READY"
     RETRIEVAL_UNAVAILABLE = "RETRIEVAL_UNAVAILABLE"
     TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
+    TOOL_NOT_PERMITTED = "TOOL_NOT_PERMITTED"
     INVALID_TOOL_ARGUMENT = "INVALID_TOOL_ARGUMENT"
     TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
@@ -76,6 +78,7 @@ class AgentResponse(BaseModel):
     decision: DecisionCard | None = None
     pending_action: dict[str, Any] | None = None
     wardrobe_plan: dict[str, Any] | None = None
+    skill: AgentSkill | None = None
     recovered: bool = False
 
     def to_dict(self) -> dict[str, Any]:

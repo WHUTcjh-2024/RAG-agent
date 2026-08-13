@@ -13,6 +13,7 @@ from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.agent.planner import ReActDecision
 from app.core.agent.workflow_state import AgentState, validate_task_id
 from app.core.agent.wardrobe import WardrobeItem, WardrobePlanner, WardrobeSnapshot
+from app.core.agent.skills import AgentSkill, ShoppingSkillRegistry
 from app.core.request_id import normalize_request_id
 
 
@@ -157,6 +158,10 @@ class ShoppingAgentWorkflowNodes:
             lambda: self.orchestrator.classify_intent(message, bool(image_path)),
         )
         slots = state.get("slots", {})
+        skill = ShoppingSkillRegistry.resolve(
+            intent=intent.value,
+            decision_product_id=state.get("decision_product_id"),
+        )
         filters = self.orchestrator.slot_extractor.to_filters(slots)
         query = self.orchestrator.slot_extractor.enrich_query(message, slots)
         tool: str | None = None
@@ -213,8 +218,13 @@ class ShoppingAgentWorkflowNodes:
                     tool = "search_products_by_text"
                     arguments = {"query": " ".join(missing), "filters": {}, "top_k": min(12, max(6, len(missing) * 3))}
 
+        if not ShoppingSkillRegistry.permits(skill, tool):
+            raise RuntimeError(
+                f"Skill {skill.id}@{skill.version} does not permit tool {tool}."
+            )
         return {
             "intent": intent.value,
+            "skill": skill.model_dump(mode="json"),
             "planned_tool": tool,
             "planned_arguments": arguments,
             "missing_fields": missing_fields,
@@ -235,10 +245,12 @@ class ShoppingAgentWorkflowNodes:
         traces: list[ToolTrace] = [
             ToolTrace.model_validate(trace) for trace in state.get("tool_trace", [])
         ]
+        skill = AgentSkill.model_validate(state["skill"])
         result = self.orchestrator._invoke(
             traces,
             tool,
             state.get("planned_arguments", {}),
+            skill=skill,
         )
         if tool == "compare_products":
             comparison = result["products"]
@@ -258,6 +270,7 @@ class ShoppingAgentWorkflowNodes:
                 traces,
                 "get_product_detail",
                 {"product_id": decision_product_id},
+                skill=skill,
             )
             products = [decision_product] + [
                 product
@@ -321,6 +334,7 @@ class ShoppingAgentWorkflowNodes:
         )
         filters = self.orchestrator.slot_extractor.to_filters(state.get("slots", {}))
         observed_ids = set(observation["product_ids"])
+        skill = AgentSkill.model_validate(state["skill"])
 
         def fallback() -> ReActDecision:
             if products:
@@ -331,7 +345,7 @@ class ShoppingAgentWorkflowNodes:
             message=state["message"],
             has_image=bool(state.get("image_path")),
             observations=observations,
-            allowed_tools=set(self.orchestrator.registry.names),
+            allowed_tools=set(skill.allowed_tools) & set(self.orchestrator.registry.names),
             fallback=fallback,
         )
         if decision.action == "finish":
@@ -377,7 +391,13 @@ class ShoppingAgentWorkflowNodes:
                 "filters": filters,
                 "top_k": 10,
             }
-        product_ids = [product_id for product_id in decision.product_ids if product_id in observed_ids]
+        product_ids = list(
+            dict.fromkeys(
+                product_id
+                for product_id in decision.product_ids
+                if product_id in observed_ids
+            )
+        )
         if tool == "get_product_detail" and len(product_ids) == 1:
             return tool, {"product_id": product_ids[0]}
         if tool == "compare_products" and 2 <= len(product_ids) <= 3:
@@ -618,6 +638,11 @@ class ShoppingAgentWorkflowNodes:
             decision=state.get("decision"),
             pending_action=state.get("pending_action"),
             wardrobe_plan=state.get("wardrobe_plan"),
+            skill=(
+                AgentSkill.model_validate(state["skill"])
+                if state.get("skill")
+                else None
+            ),
         ).to_dict()
         return {
             "response": response,

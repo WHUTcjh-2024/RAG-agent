@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Callable, Literal
@@ -159,7 +160,13 @@ class AgentPlanner:
                         f"Allowed tools: {', '.join(safe_tools)}. Image present: {has_image}. "
                         "Finish once the evidence is sufficient.",
                     ),
-                    ("human", {"request": message, "observations": observations[-3:]}),
+                    (
+                        "human",
+                        json.dumps(
+                            {"request": message, "observations": observations[-3:]},
+                            ensure_ascii=False,
+                        ),
+                    ),
                 ]
             )
             if decision.action == "finish":
