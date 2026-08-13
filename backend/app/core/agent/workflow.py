@@ -33,6 +33,7 @@ DEFAULT_CHECKPOINT_DB = (
     Path(__file__).resolve().parents[3] / "data" / "sqlite" / "agent_checkpoints.db"
 )
 DEFAULT_CHECKPOINT_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_REACT_MAX_STEPS = 3
 
 
 def _checkpoint_ttl_seconds() -> int:
@@ -44,6 +45,17 @@ def _checkpoint_ttl_seconds() -> int:
     if seconds <= 0:
         raise RuntimeError("CHECKPOINT_TTL_SECONDS must be a positive integer.")
     return seconds
+
+
+def _react_max_steps() -> int:
+    configured = os.getenv("AGENT_REACT_MAX_STEPS", str(DEFAULT_REACT_MAX_STEPS))
+    try:
+        steps = int(configured)
+    except ValueError as error:
+        raise RuntimeError("AGENT_REACT_MAX_STEPS must be between 1 and 6.") from error
+    if not 1 <= steps <= 6:
+        raise RuntimeError("AGENT_REACT_MAX_STEPS must be between 1 and 6.")
+    return steps
 
 
 class _TaskLockPool:
@@ -81,6 +93,7 @@ class RecoverableShoppingAgentWorkflow:
         "load_context",
         "plan_tools",
         "retrieve_candidates",
+        "observe_and_replan",
         "verify_constraints",
         "build_evidence",
         "generate_answer",
@@ -105,6 +118,7 @@ class RecoverableShoppingAgentWorkflow:
             check_same_thread=False,
         )
         self.checkpoint_ttl_seconds = _checkpoint_ttl_seconds()
+        self.react_max_steps = _react_max_steps()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_checkpoint_ttls (
@@ -266,11 +280,19 @@ class RecoverableShoppingAgentWorkflow:
             ("understand_request", "load_context"),
             ("load_context", "plan_tools"),
             ("plan_tools", "retrieve_candidates"),
-            ("retrieve_candidates", "verify_constraints"),
             ("verify_constraints", "build_evidence"),
             ("build_evidence", "generate_answer"),
         ):
             builder.add_edge(source, target)
+        builder.add_edge("retrieve_candidates", "observe_and_replan")
+        builder.add_conditional_edges(
+            "observe_and_replan",
+            self.route_after_observation,
+            {
+                "continue": "retrieve_candidates",
+                "verify": "verify_constraints",
+            },
+        )
         builder.add_conditional_edges(
             "generate_answer",
             self.route_after_answer,
@@ -290,6 +312,10 @@ class RecoverableShoppingAgentWorkflow:
             if state.get("pending_action") or state.get("intent") == "cart_handoff"
             else "complete"
         )
+
+    @staticmethod
+    def route_after_observation(state: AgentState) -> str:
+        return "continue" if state.get("planned_tool") else "verify"
 
     def _initial_state(
         self,
@@ -333,6 +359,10 @@ class RecoverableShoppingAgentWorkflow:
             "slots": {},
             "planned_tool": None,
             "planned_arguments": {},
+            "react_step": 0,
+            "react_max_steps": self.react_max_steps,
+            "react_observations": [],
+            "react_stop_reason": None,
             "comparison": [],
             "tool_trace": [],
             "node_trace": [],

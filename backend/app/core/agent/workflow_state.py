@@ -36,6 +36,10 @@ class AgentState(TypedDict, total=False):
     slots: dict[str, Any]
     planned_tool: str | None
     planned_arguments: dict[str, Any]
+    react_step: int
+    react_max_steps: int
+    react_observations: list[dict[str, Any]]
+    react_stop_reason: str | None
     comparison: list[dict[str, Any]]
     tool_trace: list[dict[str, Any]]
     node_trace: list[dict[str, Any]]

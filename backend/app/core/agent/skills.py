@@ -34,12 +34,14 @@ class ShoppingSkillRegistry:
             AgentSkill(
                 id="catalog_retrieval",
                 version="v1",
-                description="Searches the verified catalog with text, image, or hybrid retrieval.",
+                description="Searches and inspects verified catalog products with text, image, or hybrid retrieval.",
                 risk_level="read_only",
                 allowed_tools=[
                     "search_products_by_text",
                     "search_products_by_image",
                     "hybrid_search",
+                    "get_product_detail",
+                    "compare_products",
                     "update_user_preference",
                 ],
                 supported_intents=[

@@ -90,6 +90,7 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
         "load_context",
         "plan_tools",
         "retrieve_candidates",
+        "observe_and_replan",
         "verify_constraints",
         "build_evidence",
         "generate_answer",
@@ -104,6 +105,8 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
     assert state["context_refs"]["candidate_article_ids"] == ["0000000001"]
     assert state["evidence"][0]["source"] == "catalog"
     assert state["status"] == "completed"
+    assert state["react_observations"][0]["tool"] == "search_products_by_text"
+    assert state["react_stop_reason"] == "sufficient_evidence"
 
     with sqlite3.connect(tmp_path / "checkpoints.db") as connection:
         tables = {
@@ -113,6 +116,67 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
             )
         }
     assert {"checkpoints", "writes"} <= tables
+
+
+def test_react_loop_replans_after_empty_search_and_stops_at_evidence(
+    tmp_path: Path,
+) -> None:
+    workflow, orchestrator = create_workflow(tmp_path)
+    original_invoke = orchestrator.registry.invoke
+    searches = 0
+
+    def empty_then_results(name, arguments):
+        nonlocal searches
+        if name == "search_products_by_text":
+            searches += 1
+            if searches == 1:
+                return {"results": [], "total_candidates": 0}
+        return original_invoke(name, arguments)
+
+    orchestrator.registry.invoke = empty_then_results
+    try:
+        response = invoke_recommendation(workflow, "react-replan")
+        state = workflow.get_task_state("react-replan")
+    finally:
+        workflow.close()
+
+    assert searches == 2
+    assert len(state["react_observations"]) == 2
+    assert state["react_stop_reason"] == "sufficient_evidence"
+    assert state["executed_nodes"].count("retrieve_candidates") == 2
+    assert state["executed_nodes"].count("observe_and_replan") == 2
+    assert len(response.tool_trace) == 2
+
+
+def test_react_loop_allows_model_to_inspect_observed_product_detail(
+    tmp_path: Path,
+) -> None:
+    workflow, orchestrator = create_workflow(tmp_path)
+
+    class DetailAfterSearch:
+        def replan(self, **kwargs):
+            observations = kwargs["observations"]
+            if len(observations) == 1:
+                return SimpleNamespace(
+                    action="tool",
+                    tool="get_product_detail",
+                    query=None,
+                    product_ids=observations[0]["product_ids"][:1],
+                )
+            return SimpleNamespace(action="finish", tool=None, query=None, product_ids=[])
+
+    orchestrator.planner.replan = DetailAfterSearch().replan
+    try:
+        response = invoke_recommendation(workflow, "react-product-detail")
+        state = workflow.get_task_state("react-product-detail")
+    finally:
+        workflow.close()
+
+    assert [trace.tool for trace in response.tool_trace] == [
+        "search_products_by_text",
+        "get_product_detail",
+    ]
+    assert state["react_stop_reason"] == "sufficient_evidence"
 
 
 class StreamingRecommendationLLM:

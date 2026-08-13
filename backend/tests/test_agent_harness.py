@@ -14,7 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.agent.contracts import ErrorCode
 from app.core.agent.errors import AgentException
-from app.core.agent.skills import ShoppingSkillRegistry
+from app.core.agent.skills import AgentSkill, ShoppingSkillRegistry
 from tests.test_agent_workflow import create_workflow, invoke_recommendation
 
 
@@ -28,14 +28,20 @@ def test_skill_registry_declares_tool_boundaries() -> None:
 
     assert retrieval.id == "catalog_retrieval"
     assert ShoppingSkillRegistry.permits(retrieval, "search_products_by_text")
-    assert not ShoppingSkillRegistry.permits(retrieval, "get_product_detail")
+    assert ShoppingSkillRegistry.permits(retrieval, "get_product_detail")
+    assert ShoppingSkillRegistry.permits(retrieval, "compare_products")
     assert handoff.risk_level == "confirm_required"
 
 
 def test_runtime_guard_rejects_tool_outside_current_skill(tmp_path: Path) -> None:
     workflow, orchestrator = create_workflow(tmp_path)
-    skill = ShoppingSkillRegistry.resolve(
-        intent="text_recommendation", decision_product_id=None
+    skill = AgentSkill(
+        id="restricted_catalog",
+        version="v1",
+        description="Test-only restricted catalog access.",
+        risk_level="read_only",
+        allowed_tools=["search_products_by_text"],
+        supported_intents=["text_recommendation"],
     )
     try:
         with pytest.raises(AgentException) as denied:
@@ -53,7 +59,7 @@ def test_runtime_guard_rejects_tool_outside_current_skill(tmp_path: Path) -> Non
     assert denied.value.stage == "invoke_tool"
     assert denied.value.details == {
         "tool": "get_product_detail",
-        "skill_id": "catalog_retrieval",
+        "skill_id": "restricted_catalog",
         "skill_version": "v1",
     }
 
