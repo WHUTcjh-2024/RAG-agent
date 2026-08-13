@@ -5,11 +5,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.agent.contracts import ErrorCode
+from app.core.agent.errors import AgentException
 from app.core.agent.skills import ShoppingSkillRegistry
 from tests.test_agent_workflow import create_workflow, invoke_recommendation
 
@@ -26,6 +30,32 @@ def test_skill_registry_declares_tool_boundaries() -> None:
     assert ShoppingSkillRegistry.permits(retrieval, "search_products_by_text")
     assert not ShoppingSkillRegistry.permits(retrieval, "get_product_detail")
     assert handoff.risk_level == "confirm_required"
+
+
+def test_runtime_guard_rejects_tool_outside_current_skill(tmp_path: Path) -> None:
+    workflow, orchestrator = create_workflow(tmp_path)
+    skill = ShoppingSkillRegistry.resolve(
+        intent="text_recommendation", decision_product_id=None
+    )
+    try:
+        with pytest.raises(AgentException) as denied:
+            orchestrator._invoke(
+                [],
+                "get_product_detail",
+                {"product_id": "0000000001"},
+                skill=skill,
+            )
+    finally:
+        workflow.close()
+
+    assert denied.value.code == ErrorCode.TOOL_NOT_PERMITTED
+    assert denied.value.status_code == 403
+    assert denied.value.stage == "invoke_tool"
+    assert denied.value.details == {
+        "tool": "get_product_detail",
+        "skill_id": "catalog_retrieval",
+        "skill_version": "v1",
+    }
 
 
 def test_completed_task_has_versioned_skill_and_safe_replay(tmp_path: Path) -> None:

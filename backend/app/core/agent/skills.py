@@ -40,6 +40,7 @@ class ShoppingSkillRegistry:
                     "search_products_by_text",
                     "search_products_by_image",
                     "hybrid_search",
+                    "update_user_preference",
                 ],
                 supported_intents=[
                     "text_recommendation",
@@ -54,7 +55,7 @@ class ShoppingSkillRegistry:
                 version="v1",
                 description="Compares two or three catalog products using verified fields only.",
                 risk_level="read_only",
-                allowed_tools=["compare_products"],
+                allowed_tools=["compare_products", "update_user_preference"],
                 supported_intents=["compare"],
             )
         ),
@@ -64,7 +65,11 @@ class ShoppingSkillRegistry:
                 version="v1",
                 description="Builds a purchase decision card from Java-owned fit and SKU facts.",
                 risk_level="read_only",
-                allowed_tools=["search_products_by_text", "get_product_detail"],
+                allowed_tools=[
+                    "search_products_by_text",
+                    "get_product_detail",
+                    "update_user_preference",
+                ],
                 supported_intents=["text_recommendation"],
             )
         ),
@@ -74,7 +79,7 @@ class ShoppingSkillRegistry:
                 version="v1",
                 description="Builds outfit plans from a versioned wardrobe and missing-category retrieval.",
                 risk_level="read_only",
-                allowed_tools=["search_products_by_text"],
+                allowed_tools=["search_products_by_text", "update_user_preference"],
                 supported_intents=["wardrobe_plan"],
             )
         ),
@@ -84,7 +89,7 @@ class ShoppingSkillRegistry:
                 version="v1",
                 description="Prepares a signed cart confirmation without directly writing commerce data.",
                 risk_level="confirm_required",
-                allowed_tools=["get_product_detail"],
+                allowed_tools=["get_product_detail", "update_user_preference"],
                 supported_intents=["cart_handoff"],
             )
         ),
