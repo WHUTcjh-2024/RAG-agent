@@ -18,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.agent.memory import AgentMemoryStore
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
+from app.core.agent.skills import ShoppingSkillRegistry
 from app.core.agent.workflow import RecoverableShoppingAgentWorkflow
 from app.core.retrieval.text_retriever import TextRetriever
 
@@ -96,6 +97,11 @@ def evaluate_case(
     direct_write = any(
         "cart" in tool and tool != "get_product_detail" for tool in actual_tools
     )
+    disallowed_tools = [
+        tool
+        for tool in actual_tools
+        if response.skill is None or not ShoppingSkillRegistry.permits(response.skill, tool)
+    ]
     passed = (
         response.intent.value == expected_intent
         and response.skill is not None
@@ -104,6 +110,7 @@ def evaluate_case(
         and all(node in node_names for node in required_nodes)
         and confirmation_ok
         and not direct_write
+        and not disallowed_tools
     )
     return {
         "id": case_id,
@@ -115,7 +122,8 @@ def evaluate_case(
         "nodes": node_names,
         "confirmation_required": confirmation_required,
         "confirmation_ok": confirmation_ok,
-        "tool_policy_violation": direct_write,
+        "disallowed_tools": disallowed_tools,
+        "tool_policy_violation": direct_write or bool(disallowed_tools),
     }
 
 

@@ -238,10 +238,12 @@ class ShoppingAgentWorkflowNodes:
             }
 
         traces: list[ToolTrace] = []
+        skill = AgentSkill.model_validate(state["skill"])
         result = self.orchestrator._invoke(
             traces,
             tool,
             state.get("planned_arguments", {}),
+            skill=skill,
         )
         if tool == "compare_products":
             comparison = result["products"]
@@ -261,6 +263,7 @@ class ShoppingAgentWorkflowNodes:
                 traces,
                 "get_product_detail",
                 {"product_id": decision_product_id},
+                skill=skill,
             )
             products = [decision_product] + [
                 product

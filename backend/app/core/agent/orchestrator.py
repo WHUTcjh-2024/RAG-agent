@@ -16,6 +16,7 @@ from app.core.agent.decision import (
 from app.core.agent.errors import AgentException
 from app.core.agent.memory import AgentMemoryStore, validate_session_id
 from app.core.agent.planner import AgentPlanner
+from app.core.agent.skills import AgentSkill, ShoppingSkillRegistry
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.agent.tool_registry import CommerceToolset, ToolRegistry
 from app.core.agent.wardrobe import JavaWardrobeProvider, WardrobeProvider
@@ -95,8 +96,26 @@ class ShoppingAgentOrchestrator:
         return ToolTrace(tool=tool, input=safe_input, summary=summary)
 
     def _invoke(
-        self, traces: list[ToolTrace], tool: str, arguments: dict[str, Any]
+        self,
+        traces: list[ToolTrace],
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        skill: AgentSkill,
     ) -> Any:
+        """Invoke one registered tool only when the current Skill permits it."""
+        if not ShoppingSkillRegistry.permits(skill, tool):
+            raise AgentException(
+                ErrorCode.TOOL_NOT_PERMITTED,
+                "Tool is not permitted by the current Agent Skill.",
+                status_code=HTTPStatus.FORBIDDEN,
+                stage="invoke_tool",
+                details={
+                    "tool": tool,
+                    "skill_id": skill.id,
+                    "skill_version": skill.version,
+                },
+            )
         if (
             tool == "search_products_by_image"
             and self.toolset.image_retriever is None
@@ -180,23 +199,28 @@ class ShoppingAgentOrchestrator:
         )
         self.memory.add_user_message(session_id, message or "[上传图片]")
         traces: list[ToolTrace] = []
+        intent = self.planner.choose(
+            message,
+            bool(image_path),
+            lambda: self.classify_intent(message, bool(image_path)),
+        )
+        skill = ShoppingSkillRegistry.resolve(
+            intent=intent.value,
+            decision_product_id=None,
+        )
         extracted = self.slot_extractor.extract(message)
         if extracted:
             preference_result = self._invoke(
                 traces,
                 "update_user_preference",
                 {"session_id": session_id, "slots": extracted},
+                skill=skill,
             )
             slots = preference_result["slots"]
         else:
             slots = dict(self.memory.get(session_id).slots)
         filters = self.slot_extractor.to_filters(slots)
         retrieval_query = self.slot_extractor.enrich_query(message, slots)
-        intent = self.planner.choose(
-            message,
-            bool(image_path),
-            lambda: self.classify_intent(message, bool(image_path)),
-        )
         response = AgentResponse(
             request_id=request_id,
             session_id=session_id,
@@ -204,6 +228,7 @@ class ShoppingAgentOrchestrator:
             answer="",
             slots=slots,
             tool_trace=traces,
+            skill=skill,
         )
 
         if intent in {
@@ -221,6 +246,7 @@ class ShoppingAgentOrchestrator:
                         "filters": filters,
                         "top_k": 5,
                     },
+                    skill=skill,
                 )
             elif intent == Intent.IMAGE_SEARCH:
                 result = self._invoke(
@@ -231,12 +257,14 @@ class ShoppingAgentOrchestrator:
                         "filters": filters,
                         "top_k": 5,
                     },
+                    skill=skill,
                 )
             else:
                 result = self._invoke(
                     response.tool_trace,
                     "search_products_by_text",
                     {"query": retrieval_query, "filters": filters, "top_k": 5},
+                    skill=skill,
                 )
             response.products = result["results"]
             self.memory.set_last_results(
@@ -256,6 +284,7 @@ class ShoppingAgentOrchestrator:
                     response.tool_trace,
                     "compare_products",
                     {"product_ids": product_ids[:3]},
+                    skill=skill,
                 )
                 response.comparison = result["products"]
                 response.answer = "The comparison uses verified catalog fields." if language == "en" else "已按真实商品字段整理对比结果。"
