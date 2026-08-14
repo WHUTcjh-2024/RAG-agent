@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.tools import BaseTool
+from pydantic import ValidationError
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -70,10 +74,9 @@ def test_agent_recommend_compare_and_handoff_cart(tmp_path: Path) -> None:
 class FakeHallucinatingChain:
     def invoke(self, inputs):
         return GroundedRecommendation(
-            intro="候选推荐",
             recommendations=[
-                ProductReason(article_id="9999999999", reason="虚构商品"),
-                ProductReason(article_id="0000000001", reason="真实候选商品理由"),
+                ProductReason(article_id="9999999999"),
+                ProductReason(article_id="0000000001"),
             ],
         )
 
@@ -98,9 +101,22 @@ def test_llm_product_id_whitelist_drops_hallucinations() -> None:
         slots={"color": "Red", "category": "Shirt"},
         history=[],
     )
-    assert intro == "候选推荐"
-    assert reasons == {"0000000001": "真实候选商品理由"}
+    assert intro == "根据你的需求，我从真实商品库中筛出了这些候选。"
+    assert reasons == {
+        "0000000001": "Red Shirt 属于 Shirt，颜色为 Red，来自与当前需求匹配的商品目录。"
+    }
     assert "9999999999" not in reasons
+
+
+def test_model_selection_schema_rejects_freeform_recommendation_facts() -> None:
+    with pytest.raises(ValidationError):
+        GroundedRecommendation.model_validate(
+            {
+                "recommendations": [
+                    {"article_id": "0000000001", "reason": "现货 99 元羊毛"}
+                ]
+            }
+        )
 
 
 def test_llm_failure_is_logged_and_falls_back(caplog) -> None:

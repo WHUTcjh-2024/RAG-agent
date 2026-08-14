@@ -7,10 +7,10 @@
 - `build_text_index.py` 会在文本索引内生成 `bm25.json`，并在 `metadata.json` 记录输入文件 SHA-256、稀疏索引版本和构建时间。
 - 每项返回商品都包含 `retrieval`：召回来源、每路名次、原始分数、RRF 分数、重排分数和索引版本，供 Agent Trace 与前端排障使用。
 
-离线评测使用 `backend/evaluation/cases.json` 中与商品描述不同的中文需求和相关商品 ID；命令为：
+离线评测使用 `backend/evaluation/cases.json` 中与商品描述不同的中文需求和相关商品 ID。每组标签必须声明所对应目录的输入 SHA-256 与商品数量；评测脚本会拒绝空标签、商品自检索和目录版本不匹配，避免用“商品拿自己的描述搜自己”冒充推荐质量。命令为：
 
 ```powershell
 python backend/scripts/evaluate_recommendations.py
 ```
 
-报告包含 Recall@1/@5/@10、MRR@10、NDCG@10 和 P50/P95 延迟。新增标注时只追加 `labeled_retrieval` 用例，不使用商品原始 `text_profile` 作为查询。
+报告包含逐用例的命中位置、Recall@1/@5/@10、MRR@10、NDCG@10 和 P50/P95 延迟。新增标注时只追加 `labeled_retrieval` 用例，不使用商品原始 `text_profile` 作为查询；切换目录时须同步更新 `catalog.input_sha256`、`catalog.product_count` 并重新标注。
