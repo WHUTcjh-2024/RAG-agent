@@ -10,12 +10,19 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.agent.evaluation import (
+    AgentEvaluationRunner,
+    configured_llm_judge,
+    percentile,
+    summarize_task_traces,
+)
 from app.core.agent.orchestrator import ShoppingAgentOrchestrator
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.retrieval.text_retriever import TextRetriever
@@ -23,7 +30,7 @@ from app.core.retrieval.text_retriever import TextRetriever
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate retrieval, intent and slot quality."
+        description="Evaluate labeled catalog retrieval and executable agent tasks."
     )
     parser.add_argument(
         "--cases", type=Path, default=BACKEND_DIR / "evaluation" / "cases.json"
@@ -43,12 +50,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum_ndcg_at_10", type=float, default=0.80)
     parser.add_argument("--minimum_intent_accuracy", type=float, default=0.90)
     parser.add_argument("--minimum_slot_accuracy", type=float, default=0.90)
+    parser.add_argument("--minimum_task_success_rate", type=float, default=0.95)
+    parser.add_argument("--minimum_tool_argument_accuracy", type=float, default=0.95)
+    parser.add_argument("--minimum_fact_citation_coverage", type=float, default=1.0)
+    parser.add_argument("--minimum_refusal_injection_pass_rate", type=float, default=1.0)
+    parser.add_argument("--minimum_business_execution_pass_rate", type=float, default=1.0)
+    parser.add_argument("--maximum_task_latency_ms_p95", type=float, default=2_500)
+    parser.add_argument("--maximum_estimated_cost_usd", type=float, default=0.50)
+    parser.add_argument(
+        "--llm-judge",
+        choices=("off", "auto", "required"),
+        default="auto",
+        help="Use EVAL_LLM_JUDGE_* credentials for subjective quality evaluation.",
+    )
+    parser.add_argument("--minimum_llm_judge_pass_rate", type=float, default=0.80)
     return parser.parse_args()
-
-
-def percentile(values: list[float], fraction: float) -> float:
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * fraction))]
 
 
 def ndcg_at_k(result_ids: list[str], relevant_ids: set[str], k: int = 10) -> float:
@@ -62,32 +78,60 @@ def ndcg_at_k(result_ids: list[str], relevant_ids: set[str], k: int = 10) -> flo
     return discounted_gain / ideal_gain if ideal_gain else 0.0
 
 
+def _write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+def _configuration_error(args: argparse.Namespace, message: str) -> int:
+    _write_report(
+        args.report,
+        {
+            "schema_version": 2,
+            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "invalid_evaluation_configuration",
+            "error": message,
+        },
+    )
+    return 2
+
+
 def _require_labeled_cases(
-    cases: dict[str, object], catalog: dict[str, dict[str, object]], metadata: dict[str, object]
-) -> list[dict[str, object]]:
-    """Reject placeholder or mismatched labels instead of measuring self-retrieval."""
+    cases: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Validate independent labels against the exact indexed catalog snapshot."""
     labeled_cases = cases.get("labeled_retrieval")
     if not isinstance(labeled_cases, list) or not labeled_cases:
-        raise ValueError("labeled_retrieval must contain independently authored query labels.")
+        raise ValueError(
+            "labeled_retrieval must contain independently authored query labels; "
+            "catalog self-retrieval is not valid evaluation."
+        )
 
-    catalog_binding = cases.get("catalog")
-    if not isinstance(catalog_binding, dict):
-        raise ValueError("Evaluation cases must declare their catalog binding.")
-    expected_sha = catalog_binding.get("input_sha256")
+    snapshot = cases.get("catalog_snapshot")
+    if not isinstance(snapshot, dict):
+        raise ValueError("Evaluation cases must declare a catalog_snapshot binding.")
+    expected_sha = snapshot.get("input_sha256")
+    if not isinstance(expected_sha, str) or not expected_sha:
+        raise ValueError("catalog_snapshot.input_sha256 must be a non-empty string.")
     if expected_sha != metadata.get("input_sha256"):
         raise ValueError(
-            "Evaluation cases do not match the indexed catalog snapshot; "
-            "rebuild the approved catalog or use its matching labels."
+            "Catalog snapshot differs from the labeled benchmark; refresh labels "
+            "before evaluating this index."
         )
-    expected_count = catalog_binding.get("product_count")
-    if expected_count != len(catalog):
-        raise ValueError("Evaluation case catalog product_count does not match the index.")
+    expected_count = snapshot.get("product_count")
+    if not isinstance(expected_count, int) or expected_count != len(catalog):
+        raise ValueError(
+            "catalog_snapshot.product_count must match the indexed catalog."
+        )
 
-    profiles = {
-        " ".join(str(product.get("text_profile", "")).split()).casefold()
+    catalog_profiles = {
+        " ".join(str(product.get("text_profile") or "").split()).casefold()
         for product in catalog.values()
     }
-    validated: list[dict[str, object]] = []
+    validated: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for position, case in enumerate(labeled_cases, start=1):
         if not isinstance(case, dict):
@@ -96,44 +140,57 @@ def _require_labeled_cases(
         query = case.get("query")
         relevant_ids = case.get("relevant_ids")
         if not isinstance(case_id, str) or not case_id.strip() or case_id in seen_ids:
-            raise ValueError(f"labeled_retrieval item {position} has an invalid or duplicate id.")
+            raise ValueError(
+                f"labeled_retrieval item {position} has an invalid or duplicate id."
+            )
         if not isinstance(query, str) or len(query.strip()) < 8:
-            raise ValueError(f"labeled_retrieval item {case_id} needs a substantive query.")
-        normalized_query = " ".join(query.split()).casefold()
-        if normalized_query in profiles:
-            raise ValueError(f"labeled_retrieval item {case_id} repeats a catalog text profile.")
+            raise ValueError(
+                f"labeled_retrieval item {case_id} needs a substantive query."
+            )
+        if " ".join(query.split()).casefold() in catalog_profiles:
+            raise ValueError(
+                f"labeled_retrieval item {case_id} repeats a catalog text profile."
+            )
         if not isinstance(relevant_ids, list) or not relevant_ids:
             raise ValueError(f"labeled_retrieval item {case_id} needs relevant_ids.")
-        if not all(isinstance(article_id, str) and article_id in catalog for article_id in relevant_ids):
-            raise ValueError(f"labeled_retrieval item {case_id} references a missing catalog product.")
+        if not all(
+            isinstance(article_id, str) and article_id in catalog
+            for article_id in relevant_ids
+        ):
+            raise ValueError(
+                f"labeled_retrieval item {case_id} references a missing catalog product."
+            )
         filters = case.get("filters", {})
         if not isinstance(filters, dict):
             raise ValueError(f"labeled_retrieval item {case_id} filters must be an object.")
-        validated.append({
-            "id": case_id,
-            "query": query,
-            "relevant_ids": list(dict.fromkeys(relevant_ids)),
-            "filters": filters,
-        })
+        validated.append(
+            {
+                "id": case_id,
+                "query": query,
+                "relevant_ids": list(dict.fromkeys(relevant_ids)),
+                "filters": filters,
+            }
+        )
         seen_ids.add(case_id)
     return validated
 
 
-def _evaluate_retrieval_cases(
-    retriever: TextRetriever, labeled_cases: list[dict[str, object]]
-) -> tuple[list[int | None], list[float], list[float], list[dict[str, object]]]:
+def _evaluate_retrieval(
+    *, retriever: TextRetriever, labeled_cases: list[dict[str, Any]], catalog: dict[str, Any]
+) -> dict[str, Any]:
     ranks: list[int | None] = []
     latencies: list[float] = []
     ndcgs: list[float] = []
-    case_results: list[dict[str, object]] = []
+    missing: list[str] = []
+    case_results: list[dict[str, Any]] = []
     for case in labeled_cases:
-        relevant_ids = set(case["relevant_ids"])
+        relevant_ids = {str(article_id) for article_id in case["relevant_ids"]}
+        missing.extend(sorted(relevant_ids - set(catalog)))
         started = time.perf_counter()
         results, _ = retriever.search(
-            str(case["query"]), top_k=10, filters=case["filters"]
+            str(case["query"]), top_k=10, filters=case.get("filters") or {}
         )
-        latency_ms = (time.perf_counter() - started) * 1000
-        latencies.append(latency_ms)
+        latencies.append((time.perf_counter() - started) * 1000)
         result_ids = [str(item["article_id"]) for item in results]
         first_rank = next(
             (
@@ -146,33 +203,69 @@ def _evaluate_retrieval_cases(
         case_ndcg = ndcg_at_k(result_ids, relevant_ids)
         ranks.append(first_rank)
         ndcgs.append(case_ndcg)
-        case_results.append({
-            "id": case["id"],
-            "query": case["query"],
-            "relevant_ids": sorted(relevant_ids),
-            "returned_ids": result_ids,
-            "first_relevant_rank": first_rank,
-            "ndcg_at_10": case_ndcg,
-            "latency_ms": round(latency_ms, 3),
-        })
-    return ranks, latencies, ndcgs, case_results
+        case_results.append(
+            {
+                "id": case["id"],
+                "query": case["query"],
+                "relevant_ids": sorted(relevant_ids),
+                "returned_ids": result_ids,
+                "first_relevant_rank": first_rank,
+                "ndcg_at_10": case_ndcg,
+                "latency_ms": round(latencies[-1], 3),
+            }
+        )
+    total = len(ranks)
+    return {
+        "evaluation_source": "explicit_labeled_catalog_cases",
+        "cases": total,
+        "recall_at_1": sum(rank == 1 for rank in ranks) / total,
+        "recall_at_5": sum(rank is not None and rank <= 5 for rank in ranks) / total,
+        "recall_at_10": sum(rank is not None for rank in ranks) / total,
+        "mrr_at_10": sum(1 / rank for rank in ranks if rank) / total,
+        "ndcg_at_10": sum(ndcgs) / total,
+        "missing_labeled_article_ids": sorted(set(missing)),
+        "latency_ms_p50": statistics.median(latencies),
+        "latency_ms_p95": percentile(latencies, 0.95),
+        "case_results": case_results,
+    }
 
 
-def evaluate(
-    *,
-    cases: dict[str, object],
-    retriever: TextRetriever,
-) -> dict[str, object]:
-    """Compute reproducible quality gates from catalog-bound independent labels."""
+def main() -> int:
+    args = parse_args()
+    cases = json.loads(args.cases.read_text(encoding="utf-8"))
+    labeled_cases = list(cases.get("labeled_retrieval") or [])
+    task_cases = list(cases.get("task_execution") or [])
+    if not labeled_cases:
+        return _configuration_error(
+            args,
+            "labeled_retrieval must contain explicit relevance labels; catalog self-retrieval is not a valid evaluation.",
+        )
+    if not task_cases:
+        return _configuration_error(args, "task_execution must contain executable agent cases.")
+
+    retriever = TextRetriever(args.text_index)
     catalog = {str(item["article_id"]): item for item in retriever.products}
-    labeled_cases = _require_labeled_cases(cases, catalog, retriever.metadata)
-    ranks, latencies, ndcgs, case_results = _evaluate_retrieval_cases(
-        retriever, labeled_cases
+    try:
+        labeled_cases = _require_labeled_cases(cases, catalog, retriever.metadata)
+    except ValueError as error:
+        return _configuration_error(args, str(error))
+    expected_snapshot = dict(cases["catalog_snapshot"])
+    index_snapshot = str(retriever.metadata.get("input_sha256") or "")
+
+    judge, judge_status = configured_llm_judge(args.llm_judge)
+    if args.llm_judge == "required" and judge is None:
+        return _configuration_error(
+            args,
+            "LLM judge is required but EVAL_LLM_JUDGE_API_KEY and EVAL_LLM_JUDGE_MODEL are not configured.",
+        )
+
+    retrieval = _evaluate_retrieval(
+        retriever=retriever, labeled_cases=labeled_cases, catalog=catalog
     )
-    intent_cases = cases.get("intent", [])
-    slot_cases = cases.get("slots", [])
-    if not isinstance(intent_cases, list) or not isinstance(slot_cases, list):
-        raise ValueError("Evaluation intent and slots cases must be arrays.")
+    intent_cases = list(cases.get("intent") or [])
+    slot_cases = list(cases.get("slots") or [])
+    if not intent_cases or not slot_cases:
+        return _configuration_error(args, "intent and slots fixtures must not be empty.")
     intent_hits = sum(
         ShoppingAgentOrchestrator.classify_intent(message, has_image) == expected
         for message, has_image, expected in intent_cases
@@ -182,49 +275,61 @@ def evaluate(
         all(extractor.extract(message).get(key) == value for key, value in expected.items())
         for message, expected in slot_cases
     )
-    total_retrieval = len(ranks)
-    return {
+    traces = AgentEvaluationRunner(retriever).run(task_cases, judge=judge)
+    task_execution = summarize_task_traces(traces)
+    judge_metrics = task_execution["llm_judge"]
+    judge_metrics.update(
+        {
+            "status": judge_status,
+            "model": getattr(judge, "model", None),
+            "required": args.llm_judge == "required",
+        }
+    )
+    report = {
+        "schema_version": 2,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
-        "case_count": total_retrieval + len(intent_cases) + len(slot_cases),
-        "retrieval": {
-            "evaluation_source": "labeled_retrieval",
-            "catalog_input_sha256": retriever.metadata.get("input_sha256"),
-            "cases": total_retrieval,
-            "recall_at_1": sum(rank == 1 for rank in ranks) / total_retrieval,
-            "recall_at_5": sum(rank is not None and rank <= 5 for rank in ranks)
-            / total_retrieval,
-            "recall_at_10": sum(rank is not None for rank in ranks) / total_retrieval,
-            "mrr_at_10": sum(1 / rank for rank in ranks if rank) / total_retrieval,
-            "ndcg_at_10": sum(ndcgs) / total_retrieval,
-            "missing_article_ids": [],
-            "latency_ms_p50": statistics.median(latencies),
-            "latency_ms_p95": percentile(latencies, 0.95),
-            "case_results": case_results,
+        "status": "completed",
+        "case_count": len(labeled_cases) + len(intent_cases) + len(slot_cases) + len(task_cases),
+        "catalog_snapshot": {
+            "input_sha256": index_snapshot,
+            "label_snapshot_sha256": expected_snapshot.get("input_sha256"),
+            "matches_labels": not expected_snapshot.get("input_sha256")
+            or expected_snapshot.get("input_sha256") == index_snapshot,
         },
+        "retrieval": retrieval,
         "intent_accuracy": intent_hits / len(intent_cases),
         "slot_accuracy": slot_hits / len(slot_cases),
+        "task_execution": task_execution,
+        "traces": [trace.to_dict() for trace in traces],
     }
-
-
-def main() -> int:
-    args = parse_args()
-    cases = json.loads(args.cases.read_text(encoding="utf-8"))
-    retriever = TextRetriever(args.text_index)
-    report = evaluate(cases=cases, retriever=retriever)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    _write_report(args.report, report)
     thresholds_ok = (
-        report["retrieval"]["recall_at_1"] >= args.minimum_recall_at_1
-        and report["retrieval"]["recall_at_5"] >= args.minimum_recall_at_5
-        and report["retrieval"]["recall_at_10"] >= args.minimum_recall_at_10
-        and report["retrieval"]["mrr_at_10"] >= args.minimum_mrr_at_10
-        and report["retrieval"]["ndcg_at_10"] >= args.minimum_ndcg_at_10
+        not retrieval["missing_labeled_article_ids"]
+        and retrieval["recall_at_1"] >= args.minimum_recall_at_1
+        and retrieval["recall_at_5"] >= args.minimum_recall_at_5
+        and retrieval["recall_at_10"] >= args.minimum_recall_at_10
+        and retrieval["mrr_at_10"] >= args.minimum_mrr_at_10
+        and retrieval["ndcg_at_10"] >= args.minimum_ndcg_at_10
         and report["intent_accuracy"] >= args.minimum_intent_accuracy
         and report["slot_accuracy"] >= args.minimum_slot_accuracy
+        and task_execution["success_rate"] >= args.minimum_task_success_rate
+        and task_execution["tool_argument_accuracy"] >= args.minimum_tool_argument_accuracy
+        and task_execution["fact_citation_coverage"]
+        >= args.minimum_fact_citation_coverage
+        and task_execution["refusal_injection_pass_rate"]
+        >= args.minimum_refusal_injection_pass_rate
+        and task_execution["business_execution_pass_rate"]
+        >= args.minimum_business_execution_pass_rate
+        and task_execution["latency_ms_p95"] <= args.maximum_task_latency_ms_p95
+        and task_execution["estimated_cost_usd"] <= args.maximum_estimated_cost_usd
     )
+    if args.llm_judge == "required":
+        thresholds_ok = thresholds_ok and (
+            judge_metrics["cases"] > 0
+            and judge_metrics["errors"] == 0
+            and judge_metrics["pass_rate"] is not None
+            and judge_metrics["pass_rate"] >= args.minimum_llm_judge_pass_rate
+        )
     return 0 if thresholds_ok else 1
 
 

@@ -314,10 +314,17 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 export const compareProducts = (productIds: string[]) =>
   postJson<{ products: Product[] }>("/api/compare", { product_ids: productIds });
 
-export const fetchSession = (sessionId: string) =>
-  postJson<{ session_id: string; slots: Slots; history: { role: "user" | "assistant"; content: string }[] }>("/api/session", {
-    session_id: sessionId
-  });
+export async function fetchSession(
+  accessToken: string,
+  sessionId: string
+): Promise<{ session_id: string; slots: Slots; history: { role: "user" | "assistant"; content: string }[] }> {
+  const response = await ensureOk(await fetch("/api/session", {
+    method: "POST",
+    headers: { ...authorized(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId })
+  }));
+  return response.json();
+}
 
 export async function cancelAgentTask(token: string, taskId: string, sessionId: string): Promise<boolean> {
   const response = await ensureOk(await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {

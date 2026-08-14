@@ -5,6 +5,20 @@ server:
 rag:
   upstream-base-url: ${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}
 
+tryon:
+  inference-base-url: ${RAG_UPSTREAM_BASE_URL:http://127.0.0.1:18000}
+  internal-token: ${AGENT_INTERNAL_TOKEN:}
+  worker-count: ${TRYON_WORKER_COUNT:4}
+  queue-capacity: ${TRYON_QUEUE_CAPACITY:128}
+  max-attempts: ${TRYON_MAX_ATTEMPTS:3}
+  rate-limit-count: ${TRYON_RATE_LIMIT_COUNT:10}
+  rate-limit-window: ${TRYON_RATE_LIMIT_WINDOW:10m}
+  result-ttl: ${TRYON_RESULT_TTL:24h}
+  saved-result-ttl: ${TRYON_SAVED_RESULT_TTL:168h}
+  provider-timeout: ${TRYON_PROVIDER_TIMEOUT:90s}
+  processing-lease: ${TRYON_PROCESSING_LEASE:2m}
+  result-signing-secret: ${VTO_RESULT_SIGNING_SECRET:replace-with-a-random-result-url-signing-secret}
+
 auth:
   jwt:
     secret: ${AUTH_JWT_SECRET:atelier-local-dev-secret-at-least-32-bytes}

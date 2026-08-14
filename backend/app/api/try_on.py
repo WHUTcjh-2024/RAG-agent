@@ -15,12 +15,15 @@ from app.core.virtual_try_on import (
     TryOnJob,
     VirtualTryOnService,
     build_virtual_try_on_service,
+    infer_category,
     load_catalog_product,
+    load_product_image,
     validate_idempotency_key,
 )
 
 
 router = APIRouter(tags=["virtual-try-on"])
+internal_router = APIRouter(tags=["internal"])
 _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
 
 
@@ -71,6 +74,12 @@ class FeedbackRequest(BaseModel):
     ] = Field(default_factory=list, max_length=5)
 
 
+class InternalRenderRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=100)
+    product_id: str = Field(min_length=1, max_length=100)
+    body_profile: BodyProfileRequest
+
+
 @lru_cache(maxsize=1)
 def get_try_on_service() -> VirtualTryOnService:
     return build_virtual_try_on_service()
@@ -86,6 +95,13 @@ def _trusted_user_id(request: Request) -> str:
     return user_id
 
 
+def _require_internal_token(request: Request) -> None:
+    expected_token = os.getenv("AGENT_INTERNAL_TOKEN", "").strip()
+    supplied_token = request.headers.get("X-Agent-Internal-Token", "")
+    if not expected_token or supplied_token != expected_token:
+        raise HTTPException(status_code=401, detail="Internal authentication required.")
+
+
 def _raise_try_on_error(error: TryOnError) -> None:
     status = {
         "RATE_LIMITED": 429,
@@ -96,6 +112,30 @@ def _raise_try_on_error(error: TryOnError) -> None:
     }.get(error.code, 422)
     headers = {"Retry-After": "60"} if error.code == "RATE_LIMITED" else None
     raise HTTPException(status_code=status, detail=error.args[0], headers=headers)
+
+
+@internal_router.post("/internal/try-on/render", include_in_schema=False)
+async def render_try_on_for_scheduler(
+    payload: InternalRenderRequest,
+    request: Request,
+) -> Response:
+    """Private inference bridge used by the Java scheduler; never expose it through the gateway."""
+    _require_internal_token(request)
+    service = get_try_on_service()
+    if not service.configured:
+        raise HTTPException(status_code=503, detail="Try-on inference is not configured.")
+    try:
+        product = await asyncio.to_thread(load_catalog_product, payload.product_id.strip())
+        output = await service.provider.render(
+            body_profile=payload.body_profile.to_domain(),
+            garment=await asyncio.to_thread(load_product_image, product),
+            product_id=payload.product_id.strip(),
+            category=infer_category(product),
+            job_id=payload.job_id,
+        )
+    except TryOnError as error:
+        _raise_try_on_error(error)
+    return Response(content=output, media_type="image/jpeg")
 
 
 def _job_payload(service: VirtualTryOnService, job: TryOnJob) -> dict[str, object]:

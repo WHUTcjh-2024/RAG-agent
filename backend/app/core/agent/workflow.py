@@ -3,10 +3,8 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock, RLock
 from time import perf_counter
 from typing import Any, Iterator
 
@@ -25,6 +23,7 @@ from app.core.agent.workflow_state import (
     validate_task_id,
     workflow_enabled as workflow_enabled,
 )
+from app.core.agent.runtime import TaskLock, create_task_lock
 from app.core.request_id import normalize_request_id
 from app.core.agent.telemetry import telemetry
 
@@ -33,6 +32,7 @@ DEFAULT_CHECKPOINT_DB = (
     Path(__file__).resolve().parents[3] / "data" / "sqlite" / "agent_checkpoints.db"
 )
 DEFAULT_CHECKPOINT_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_REACT_MAX_STEPS = 3
 
 
 def _checkpoint_ttl_seconds() -> int:
@@ -46,32 +46,15 @@ def _checkpoint_ttl_seconds() -> int:
     return seconds
 
 
-class _TaskLockPool:
-    """Serialize duplicate task requests without retaining unused locks."""
-
-    def __init__(self) -> None:
-        self._guard = Lock()
-        self._entries: dict[str, tuple[RLock, int]] = {}
-
-    @contextmanager
-    def hold(self, task_id: str) -> Iterator[None]:
-        with self._guard:
-            lock, references = self._entries.get(task_id, (RLock(), 0))
-            self._entries[task_id] = (lock, references + 1)
-        lock.acquire()
-        try:
-            yield
-        finally:
-            lock.release()
-            with self._guard:
-                current_lock, current_references = self._entries[task_id]
-                if current_references == 1:
-                    del self._entries[task_id]
-                else:
-                    self._entries[task_id] = (
-                        current_lock,
-                        current_references - 1,
-                    )
+def _react_max_steps() -> int:
+    configured = os.getenv("AGENT_REACT_MAX_STEPS", str(DEFAULT_REACT_MAX_STEPS))
+    try:
+        steps = int(configured)
+    except ValueError as error:
+        raise RuntimeError("AGENT_REACT_MAX_STEPS must be between 1 and 6.") from error
+    if not 1 <= steps <= 6:
+        raise RuntimeError("AGENT_REACT_MAX_STEPS must be between 1 and 6.")
+    return steps
 
 
 class RecoverableShoppingAgentWorkflow:
@@ -81,6 +64,7 @@ class RecoverableShoppingAgentWorkflow:
         "load_context",
         "plan_tools",
         "retrieve_candidates",
+        "observe_and_replan",
         "verify_constraints",
         "build_evidence",
         "generate_answer",
@@ -92,38 +76,76 @@ class RecoverableShoppingAgentWorkflow:
         self,
         orchestrator: ShoppingAgentOrchestrator,
         checkpoint_path: str | Path | None = None,
+        task_lock: TaskLock | None = None,
     ) -> None:
-        configured = os.getenv("AGENT_CHECKPOINT_DB_PATH", "").strip()
-        self.checkpoint_path = Path(
-            checkpoint_path or configured or DEFAULT_CHECKPOINT_DB
-        ).resolve()
-        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self.orchestrator = orchestrator
-        self._connection = sqlite3.connect(
-            self.checkpoint_path,
-            timeout=30,
-            check_same_thread=False,
-        )
         self.checkpoint_ttl_seconds = _checkpoint_ttl_seconds()
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS agent_checkpoint_ttls (
-                task_id TEXT PRIMARY KEY,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        self._cleanup_expired_checkpoints()
-        self._checkpointer = SqliteSaver(self._connection)
-        self._checkpointer.setup()
-        self._locks = _TaskLockPool()
+        self.react_max_steps = _react_max_steps()
+        self._storage_backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "sqlite").strip().casefold()
+        self._connection: sqlite3.Connection | None = None
+        self._checkpointer_context = None
+        self.checkpoint_path: Path | None = None
+        self._checkpointer = self._create_checkpointer(checkpoint_path)
+        self._locks = task_lock or create_task_lock()
         self.nodes = ShoppingAgentWorkflowNodes(orchestrator)
         self.graph = self._build_graph()
 
     def close(self) -> None:
-        self._connection.close()
+        if self._checkpointer_context is not None:
+            self._checkpointer_context.__exit__(None, None, None)
+            self._checkpointer_context = None
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+    def _create_checkpointer(self, checkpoint_path: str | Path | None):
+        if self._storage_backend == "sqlite":
+            configured = os.getenv("AGENT_CHECKPOINT_DB_PATH", "").strip()
+            self.checkpoint_path = Path(
+                checkpoint_path or configured or DEFAULT_CHECKPOINT_DB
+            ).resolve()
+            self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(
+                self.checkpoint_path,
+                timeout=30,
+                check_same_thread=False,
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_checkpoint_ttls (
+                    task_id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._cleanup_expired_checkpoints()
+            saver = SqliteSaver(self._connection)
+            saver.setup()
+            return saver
+        if self._storage_backend != "postgres":
+            raise RuntimeError("AGENT_CHECKPOINT_BACKEND must be 'sqlite' or 'postgres'.")
+        if checkpoint_path is not None:
+            raise ValueError("checkpoint_path is only supported by the SQLite checkpointer.")
+        database_url = os.getenv("AGENT_CHECKPOINT_DATABASE_URL", "").strip()
+        if not database_url:
+            raise RuntimeError(
+                "AGENT_CHECKPOINT_DATABASE_URL is required when AGENT_CHECKPOINT_BACKEND=postgres."
+            )
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+        except ImportError as error:  # pragma: no cover - production dependency guard
+            raise RuntimeError(
+                "Install langgraph-checkpoint-postgres and psycopg for the Postgres checkpointer."
+            ) from error
+        self._checkpointer_context = PostgresSaver.from_conn_string(database_url)
+        saver = self._checkpointer_context.__enter__()
+        if os.getenv("AGENT_CHECKPOINT_AUTO_SETUP", "false").strip().casefold() in {"1", "true", "yes"}:
+            saver.setup()
+        return saver
 
     def _cleanup_expired_checkpoints(self) -> int:
+        if self._connection is None:
+            return 0
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.checkpoint_ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         expired = self._connection.execute(
             "SELECT task_id FROM agent_checkpoint_ttls WHERE updated_at < ?", (cutoff,)
@@ -133,6 +155,8 @@ class RecoverableShoppingAgentWorkflow:
         return len(expired)
 
     def _register_checkpoint_task(self, task_id: str) -> None:
+        if self._connection is None:
+            return
         self._connection.execute(
             """
             INSERT INTO agent_checkpoint_ttls(task_id) VALUES (?)
@@ -142,14 +166,24 @@ class RecoverableShoppingAgentWorkflow:
         )
 
     def _delete_task_checkpoints(self, task_id: str) -> None:
-        self._connection.execute("DELETE FROM checkpoints WHERE thread_id=?", (task_id,))
-        self._connection.execute("DELETE FROM writes WHERE thread_id=?", (task_id,))
-        self._connection.execute("DELETE FROM agent_checkpoint_ttls WHERE task_id=?", (task_id,))
+        if self._connection is not None:
+            self._connection.execute("DELETE FROM checkpoints WHERE thread_id=?", (task_id,))
+            self._connection.execute("DELETE FROM writes WHERE thread_id=?", (task_id,))
+            self._connection.execute("DELETE FROM agent_checkpoint_ttls WHERE task_id=?", (task_id,))
+            return
+        delete_thread = getattr(self._checkpointer, "delete_thread", None)
+        if delete_thread is None:
+            raise RuntimeError("Configured checkpointer does not support thread deletion.")
+        delete_thread(task_id)
 
     def purge_tasks(self, task_ids: list[str]) -> None:
         with self._locks.hold("checkpoint-cleanup"):
             for task_id in task_ids:
                 self._delete_task_checkpoints(validate_task_id(task_id))
+
+    def prune_expired_checkpoints(self) -> int:
+        """Run from one scheduled maintenance job, not every API replica."""
+        return self._cleanup_expired_checkpoints()
 
     @staticmethod
     def _fingerprint(
@@ -266,11 +300,19 @@ class RecoverableShoppingAgentWorkflow:
             ("understand_request", "load_context"),
             ("load_context", "plan_tools"),
             ("plan_tools", "retrieve_candidates"),
-            ("retrieve_candidates", "verify_constraints"),
             ("verify_constraints", "build_evidence"),
             ("build_evidence", "generate_answer"),
         ):
             builder.add_edge(source, target)
+        builder.add_edge("retrieve_candidates", "observe_and_replan")
+        builder.add_conditional_edges(
+            "observe_and_replan",
+            self.route_after_observation,
+            {
+                "continue": "retrieve_candidates",
+                "verify": "verify_constraints",
+            },
+        )
         builder.add_conditional_edges(
             "generate_answer",
             self.route_after_answer,
@@ -290,6 +332,10 @@ class RecoverableShoppingAgentWorkflow:
             if state.get("pending_action") or state.get("intent") == "cart_handoff"
             else "complete"
         )
+
+    @staticmethod
+    def route_after_observation(state: AgentState) -> str:
+        return "continue" if state.get("planned_tool") else "verify"
 
     def _initial_state(
         self,
@@ -333,6 +379,10 @@ class RecoverableShoppingAgentWorkflow:
             "slots": {},
             "planned_tool": None,
             "planned_arguments": {},
+            "react_step": 0,
+            "react_max_steps": self.react_max_steps,
+            "react_observations": [],
+            "react_stop_reason": None,
             "comparison": [],
             "tool_trace": [],
             "node_trace": [],
@@ -343,6 +393,7 @@ class RecoverableShoppingAgentWorkflow:
             "decision": None,
             "wardrobe_snapshot": None,
             "wardrobe_plan": None,
+            "skill": None,
         }
 
     @staticmethod
@@ -516,3 +567,48 @@ class RecoverableShoppingAgentWorkflow:
     def get_task_state(self, task_id: str) -> AgentState:
         config = self._config(validate_task_id(task_id))
         return dict(self.graph.get_state(config).values)
+
+    def get_replay(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        trusted_user_id: str | None,
+    ) -> dict[str, Any]:
+        """Return a privacy-safe task replay for debugging and evaluation.
+
+        Raw prompts, generated text, images and user body data stay out of the
+        replay. The result contains only execution metadata, facts references
+        and the structured outcome already returned to the requesting user.
+        """
+        task_id = validate_task_id(task_id)
+        session_id = validate_session_id(session_id)
+        state = self.get_task_state(task_id)
+        if not state or state.get("session_id") != session_id:
+            raise invalid_input(
+                "Task does not belong to this session.", status_code=404
+            )
+        if (
+            state.get("trusted_context")
+            and state.get("trusted_user_id") != trusted_user_id
+        ):
+            raise invalid_input("Trusted user context is required.", status_code=401)
+        response = state.get("response", {})
+        pending = response.get("pending_action") if isinstance(response, dict) else None
+        return {
+            "task_id": task_id,
+            "request_id": state.get("request_id"),
+            "status": state.get("status"),
+            "intent": state.get("intent"),
+            "skill": state.get("skill"),
+            "nodes": state.get("node_trace", []),
+            "tools": state.get("tool_trace", []),
+            "context_refs": state.get("context_refs", {}),
+            "evidence": state.get("evidence", []),
+            "outcome": {
+                "candidate_count": len(state.get("candidate_products", [])),
+                "comparison_count": len(state.get("comparison", [])),
+                "decision_verdict": (state.get("decision") or {}).get("verdict"),
+                "confirmation_required": bool(pending),
+            },
+        }
