@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sqlite3
+import psycopg
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Iterator
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
@@ -26,11 +25,9 @@ from app.core.agent.workflow_state import (
 from app.core.agent.runtime import TaskLock, create_task_lock
 from app.core.request_id import normalize_request_id
 from app.core.agent.telemetry import telemetry
+from app.db.pg import database_url
 
 
-DEFAULT_CHECKPOINT_DB = (
-    Path(__file__).resolve().parents[3] / "data" / "sqlite" / "agent_checkpoints.db"
-)
 DEFAULT_CHECKPOINT_TTL_SECONDS = 24 * 60 * 60
 DEFAULT_REACT_MAX_STEPS = 3
 
@@ -81,10 +78,13 @@ class RecoverableShoppingAgentWorkflow:
         self.orchestrator = orchestrator
         self.checkpoint_ttl_seconds = _checkpoint_ttl_seconds()
         self.react_max_steps = _react_max_steps()
-        self._storage_backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "sqlite").strip().casefold()
-        self._connection: sqlite3.Connection | None = None
+        self._storage_backend = (
+            os.getenv("AGENT_CHECKPOINT_BACKEND", "postgres").strip().casefold()
+        )
+        if self._storage_backend != "postgres":
+            raise RuntimeError("AGENT_CHECKPOINT_BACKEND must be 'postgres'.")
         self._checkpointer_context = None
-        self.checkpoint_path: Path | None = None
+        self.checkpoint_path = None
         self._checkpointer = self._create_checkpointer(checkpoint_path)
         self._locks = task_lock or create_task_lock()
         self.nodes = ShoppingAgentWorkflowNodes(orchestrator)
@@ -94,83 +94,61 @@ class RecoverableShoppingAgentWorkflow:
         if self._checkpointer_context is not None:
             self._checkpointer_context.__exit__(None, None, None)
             self._checkpointer_context = None
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
 
     def _create_checkpointer(self, checkpoint_path: str | Path | None):
-        if self._storage_backend == "sqlite":
-            configured = os.getenv("AGENT_CHECKPOINT_DB_PATH", "").strip()
-            self.checkpoint_path = Path(
-                checkpoint_path or configured or DEFAULT_CHECKPOINT_DB
-            ).resolve()
-            self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            self._connection = sqlite3.connect(
-                self.checkpoint_path,
-                timeout=30,
-                check_same_thread=False,
-            )
-            self._connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_checkpoint_ttls (
-                    task_id TEXT PRIMARY KEY,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            self._cleanup_expired_checkpoints()
-            saver = SqliteSaver(self._connection)
-            saver.setup()
-            return saver
-        if self._storage_backend != "postgres":
-            raise RuntimeError("AGENT_CHECKPOINT_BACKEND must be 'sqlite' or 'postgres'.")
         if checkpoint_path is not None:
-            raise ValueError("checkpoint_path is only supported by the SQLite checkpointer.")
-        database_url = os.getenv("AGENT_CHECKPOINT_DATABASE_URL", "").strip()
-        if not database_url:
-            raise RuntimeError(
-                "AGENT_CHECKPOINT_DATABASE_URL is required when AGENT_CHECKPOINT_BACKEND=postgres."
+            raise ValueError(
+                "checkpoint_path is no longer supported; the checkpointer is "
+                "configured via AGENT_CHECKPOINT_DATABASE_URL."
             )
+        url = database_url("AGENT_CHECKPOINT_DATABASE_URL")
         try:
             from langgraph.checkpoint.postgres import PostgresSaver
         except ImportError as error:  # pragma: no cover - production dependency guard
             raise RuntimeError(
                 "Install langgraph-checkpoint-postgres and psycopg for the Postgres checkpointer."
             ) from error
-        self._checkpointer_context = PostgresSaver.from_conn_string(database_url)
+        self._checkpointer_context = PostgresSaver.from_conn_string(url)
         saver = self._checkpointer_context.__enter__()
         if os.getenv("AGENT_CHECKPOINT_AUTO_SETUP", "false").strip().casefold() in {"1", "true", "yes"}:
             saver.setup()
         return saver
 
     def _cleanup_expired_checkpoints(self) -> int:
-        if self._connection is None:
-            return 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.checkpoint_ttl_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-        expired = self._connection.execute(
-            "SELECT task_id FROM agent_checkpoint_ttls WHERE updated_at < ?", (cutoff,)
-        ).fetchall()
-        for (task_id,) in expired:
-            self._delete_task_checkpoints(str(task_id))
-        return len(expired)
+        """Delete LangGraph checkpoint rows older than the TTL via raw SQL.
+
+        The TTL bookkeeping that lived in a SQLite-only ``agent_checkpoint_ttls``
+        table is unnecessary on Postgres: LangGraph stores the write timestamp
+        inside the ``checkpoints.checkpoint`` JSONB column.
+        """
+        interval = f"now() - interval '{int(self.checkpoint_ttl_seconds)} seconds'"
+        deleted = 0
+        with psycopg.connect(database_url("AGENT_CHECKPOINT_DATABASE_URL")) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM checkpoint_writes WHERE thread_id IN ("
+                    "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+                    f"HAVING max((checkpoint->>'ts')::timestamptz) < {interval})"
+                )
+                deleted += cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM checkpoints WHERE thread_id IN ("
+                    "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+                    f"HAVING max((checkpoint->>'ts')::timestamptz) < {interval})"
+                )
+                deleted += cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM checkpoint_blobs WHERE thread_id NOT IN ("
+                    "SELECT DISTINCT thread_id FROM checkpoints)"
+                )
+                deleted += cursor.rowcount
+        return deleted
 
     def _register_checkpoint_task(self, task_id: str) -> None:
-        if self._connection is None:
-            return
-        self._connection.execute(
-            """
-            INSERT INTO agent_checkpoint_ttls(task_id) VALUES (?)
-            ON CONFLICT(task_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP
-            """,
-            (task_id,),
-        )
+        # TTL is derived from the LangGraph checkpoint timestamp on Postgres.
+        return None
 
     def _delete_task_checkpoints(self, task_id: str) -> None:
-        if self._connection is not None:
-            self._connection.execute("DELETE FROM checkpoints WHERE thread_id=?", (task_id,))
-            self._connection.execute("DELETE FROM writes WHERE thread_id=?", (task_id,))
-            self._connection.execute("DELETE FROM agent_checkpoint_ttls WHERE task_id=?", (task_id,))
-            return
         delete_thread = getattr(self._checkpointer, "delete_thread", None)
         if delete_thread is None:
             raise RuntimeError("Configured checkpointer does not support thread deletion.")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
 from app.main import app
+from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
@@ -144,13 +146,22 @@ def test_llm_failure_is_logged_and_falls_back(caplog) -> None:
 
 
 def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
+    memory_url = os.getenv("AGENT_MEMORY_DATABASE_URL")
+    checkpoint_url = os.getenv("AGENT_CHECKPOINT_DATABASE_URL")
+    if not memory_url or not checkpoint_url:
+        pytest.skip(
+            "AGENT_MEMORY_DATABASE_URL / AGENT_CHECKPOINT_DATABASE_URL are required "
+            "for the live agent API integration test."
+        )
     text_index, image_index, _ = build_fixture_indexes(tmp_path)
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))
     monkeypatch.setenv("IMAGE_INDEX_DIR", str(image_index))
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.setenv("SESSION_DB_PATH", str(tmp_path / "sessions.db"))
-    monkeypatch.setenv("AGENT_CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.db"))
+    monkeypatch.setenv("AGENT_MEMORY_DATABASE_URL", memory_url)
+    monkeypatch.setenv("AGENT_CHECKPOINT_DATABASE_URL", checkpoint_url)
+    monkeypatch.setenv("AGENT_MEMORY_AUTO_SETUP", "true")
+    monkeypatch.setenv("AGENT_CHECKPOINT_AUTO_SETUP", "true")
     monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "test-agent-context-token")
     get_memory.cache_clear()
     get_orchestrator.cache_clear()

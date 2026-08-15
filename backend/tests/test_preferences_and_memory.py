@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from app.core.agent.memory import AgentMemoryStore
 from app.core.agent.slot_extractor import SlotExtractor
 from app.core.retrieval.filters import product_matches_filters, structured_match_score
 from app.core.catalog_fields import enrich_commerce_fields
+from tests.postgres_helpers import require_postgres
 
 
 def test_preferences_drive_semantics_budget_and_exclusions() -> None:
@@ -48,19 +50,21 @@ def test_english_preferences_are_structured() -> None:
 
 
 def test_memory_survives_store_recreation(tmp_path: Path) -> None:
-    database = tmp_path / "sessions.db"
-    first = AgentMemoryStore(database)
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
+    os.environ["AGENT_MEMORY_AUTO_SETUP"] = "true"
+    first = AgentMemoryStore()
     first.update_slots("session", {"color": "Red"})
     first.add_user_message("session", "红色衬衫")
 
-    restored = AgentMemoryStore(database).get("session")
+    restored = AgentMemoryStore().get("session")
     assert restored.slots == {"color": "Red"}
     assert restored.history.messages[0].content == "红色衬衫"
 
 
 def test_commit_turn_is_idempotent_across_store_recreation(tmp_path: Path) -> None:
-    database = tmp_path / "sessions.db"
-    first = AgentMemoryStore(database)
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
+    os.environ["AGENT_MEMORY_AUTO_SETUP"] = "true"
+    first = AgentMemoryStore()
     assert first.commit_turn(
         task_id="persistent-task",
         session_id="session",
@@ -70,7 +74,7 @@ def test_commit_turn_is_idempotent_across_store_recreation(tmp_path: Path) -> No
         last_results=["0000000001"],
     )
 
-    second = AgentMemoryStore(database)
+    second = AgentMemoryStore()
     assert not second.commit_turn(
         task_id="persistent-task",
         session_id="session",

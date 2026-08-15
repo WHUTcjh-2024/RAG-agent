@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import importlib
 import json
-import sqlite3
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import psycopg
 from fastapi.testclient import TestClient
 
 
@@ -22,6 +23,7 @@ from app.core.agent.planner import AgentPlanner
 from app.core.agent.tool_registry import ToolRegistry
 from app.api.chat import trusted_user_id_from
 from app.main import app
+from tests.postgres_helpers import require_postgres
 
 
 def test_request_id_is_preserved_and_invalid_value_is_replaced() -> None:
@@ -126,18 +128,20 @@ def test_unknown_tool_and_invalid_arguments_are_classified() -> None:
 
 
 def test_session_ttl_removes_expired_state(tmp_path: Path, monkeypatch) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
+    monkeypatch.setenv("AGENT_MEMORY_AUTO_SETUP", "true")
     monkeypatch.setenv("SESSION_TTL_SECONDS", "60")
-    database = tmp_path / "sessions.db"
-    memory = AgentMemoryStore(database)
+    memory = AgentMemoryStore()
     memory.add_user_message("expired-session", "旧消息")
 
-    with sqlite3.connect(database) as connection:
+    # Backdate the persisted row so the TTL window classifies it as expired.
+    with psycopg.connect(os.environ["AGENT_MEMORY_DATABASE_URL"], connect_timeout=5) as connection:
         connection.execute(
-            "UPDATE agent_sessions SET updated_at = '2000-01-01 00:00:00' "
+            "UPDATE agent_sessions SET updated_at = '2000-01-01 00:00:00+00' "
             "WHERE session_id = 'expired-session'"
         )
 
-    restored = AgentMemoryStore(database)
+    restored = AgentMemoryStore()
     assert restored.recent_history("expired-session") == []
 
 

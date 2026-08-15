@@ -3,6 +3,9 @@
 __pycache__/
 .worktrees/
 
+# WorkBuddy project data (local agent state, not source)
+.workbuddy/
+
 # Secrets and local configuration
 .env
 # Dataset archives and generated runtime data

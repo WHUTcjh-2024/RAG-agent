@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
 import urllib.error
@@ -25,6 +24,7 @@ from opentelemetry import metrics
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.core.catalog_paths import BACKEND_DIR
+from app.db.pg import PgConnection, connect as _pg_connect
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ def _optional_float(value: object) -> float | None:
 
 @dataclass(frozen=True)
 class VirtualTryOnSettings:
-    database_path: Path
+    database_url: str = ""
     media_dir: Path
     provider_url: str
     provider_api_key: str
@@ -122,7 +122,7 @@ class VirtualTryOnSettings:
     def from_env(cls) -> VirtualTryOnSettings:
         base_dir = BACKEND_DIR / "data" / "tryon"
         return cls(
-            database_path=Path(os.getenv("VTO_DB_PATH", str(base_dir / "jobs.db"))).expanduser().resolve(),
+            database_url=os.getenv("VTO_DATABASE_URL", "").strip(),
             media_dir=Path(os.getenv("VTO_MEDIA_DIR", str(base_dir / "media"))).expanduser().resolve(),
             provider_url=os.getenv("VTO_PROVIDER_URL", "").strip(),
             provider_api_key=os.getenv("VTO_PROVIDER_API_KEY", "").strip(),
@@ -234,23 +234,20 @@ class JobDispatcher(Protocol):
     async def recover(self) -> None: ...
 
 
-class SqliteTryOnStore:
-    """Development job store. Production uses RedisTryOnStore."""
+class PostgresTryOnStore:
+    """PostgreSQL-backed job store for the virtual try-on pipeline."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, settings: VirtualTryOnSettings) -> None:
+        self._database_url = settings.database_url
+        if not self._database_url:
+            raise RuntimeError("VTO_DATABASE_URL is required for the PostgreSQL try-on store.")
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
-        return connection
+    def _connect(self) -> PgConnection:
+        return _pg_connect("VTO_DATABASE_URL")
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode = WAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tryon_jobs (
@@ -259,9 +256,9 @@ class SqliteTryOnStore:
                     product_id TEXT NOT NULL,
                     category TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     input_path TEXT,
                     output_path TEXT,
@@ -277,7 +274,13 @@ class SqliteTryOnStore:
                 )
                 """
             )
-            existing = {str(row[1]) for row in connection.execute("PRAGMA table_info(tryon_jobs)")}
+            existing = {
+                str(row["column_name"])
+                for row in connection.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'tryon_jobs'"
+                )
+            }
             for name, definition in (
                 ("body_profile_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ("saved", "INTEGER NOT NULL DEFAULT 0"),
@@ -315,54 +318,47 @@ class SqliteTryOnStore:
         ttl_hours: int,
     ) -> tuple[TryOnJob, bool]:
         now = datetime.now(UTC)
-        now_value = _timestamp(now)
+        now_value = now
         job_id = uuid4().hex
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                if idempotency_key:
-                    row = connection.execute(
-                        "SELECT * FROM tryon_jobs WHERE user_id = ? AND idempotency_key = ?",
-                        (user_id, idempotency_key),
-                    ).fetchone()
-                    if row:
-                        connection.execute("COMMIT")
-                        return _job_from_row(row), False
-                window_start = _timestamp(now - timedelta(seconds=rate_limit_window_seconds))
-                usage = connection.execute(
-                    "SELECT COUNT(*) FROM tryon_jobs WHERE user_id = ? AND created_at >= ?",
-                    (user_id, window_start),
-                ).fetchone()[0]
-                if usage >= rate_limit_count:
-                    raise TryOnError("试穿次数过多，请稍后再试。", code="RATE_LIMITED", retryable=True)
-                expires_at = _timestamp(now + timedelta(hours=ttl_hours))
-                connection.execute(
-                    """
-                    INSERT INTO tryon_jobs (
-                        id, user_id, product_id, category, status, created_at, updated_at,
-                        expires_at, attempt_count, input_path, output_path, image_width,
-                        image_height, quality_score, quality_warnings_json, failure_code,
-                        idempotency_key, body_profile_json, saved, feedback
-                    ) VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, 0, NULL, NULL, 0, 0, 100, '[]', NULL, ?, ?, 0, NULL)
-                    """,
-                    (
-                        job_id,
-                        user_id,
-                        product_id,
-                        category,
-                        now_value,
-                        now_value,
-                        expires_at,
-                        idempotency_key,
-                        json.dumps(body_profile.to_dict(), ensure_ascii=False, separators=(",", ":")),
-                    ),
-                )
-                row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
-                connection.execute("COMMIT")
-                return _job_from_row(row), True
-            except Exception:
-                connection.execute("ROLLBACK")
-                raise
+            if idempotency_key:
+                row = connection.execute(
+                    "SELECT * FROM tryon_jobs WHERE user_id = ? AND idempotency_key = ?",
+                    (user_id, idempotency_key),
+                ).fetchone()
+                if row:
+                    return _job_from_row(row), False
+            window_start = now - timedelta(seconds=rate_limit_window_seconds)
+            usage = connection.execute(
+                "SELECT COUNT(*) FROM tryon_jobs WHERE user_id = ? AND created_at >= ?",
+                (user_id, window_start),
+            ).fetchone()[0]
+            if usage >= rate_limit_count:
+                raise TryOnError("试穿次数过多，请稍后再试。", code="RATE_LIMITED", retryable=True)
+            expires_at = now + timedelta(hours=ttl_hours)
+            connection.execute(
+                """
+                INSERT INTO tryon_jobs (
+                    id, user_id, product_id, category, status, created_at, updated_at,
+                    expires_at, attempt_count, input_path, output_path, image_width,
+                    image_height, quality_score, quality_warnings_json, failure_code,
+                    idempotency_key, body_profile_json, saved, feedback
+                ) VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, 0, NULL, NULL, 0, 0, 100, '[]', NULL, ?, ?, 0, NULL)
+                """,
+                (
+                    job_id,
+                    user_id,
+                    product_id,
+                    category,
+                    now_value,
+                    now_value,
+                    expires_at,
+                    idempotency_key,
+                    json.dumps(body_profile.to_dict(), ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
+            return _job_from_row(row), True
 
     def get(self, job_id: str, user_id: str) -> TryOnJob | None:
         with self._connect() as connection:
@@ -377,37 +373,31 @@ class SqliteTryOnStore:
         return _job_from_row(row) if row else None
 
     def claim(self, job_id: str) -> TryOnJob | None:
-        now = _timestamp(datetime.now(UTC))
+        now = datetime.now(UTC)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                updated = connection.execute(
-                    "UPDATE tryon_jobs SET status = 'PROCESSING', attempt_count = attempt_count + 1, "
-                    "updated_at = ? WHERE id = ? AND status = 'QUEUED'",
-                    (now, job_id),
-                ).rowcount
-                row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
-                connection.execute("COMMIT")
-            except Exception:
-                connection.execute("ROLLBACK")
-                raise
+            updated = connection.execute(
+                "UPDATE tryon_jobs SET status = 'PROCESSING', attempt_count = attempt_count + 1, "
+                "updated_at = ? WHERE id = ? AND status = 'QUEUED'",
+                (now, job_id),
+            ).rowcount
+            row = connection.execute("SELECT * FROM tryon_jobs WHERE id = ?", (job_id,)).fetchone()
         return _job_from_row(row) if updated and row else None
 
     def retry(self, job_id: str) -> None:
-        self._update(job_id, "status = 'QUEUED', updated_at = ?", (_timestamp(datetime.now(UTC)),))
+        self._update(job_id, "status = 'QUEUED', updated_at = ?", (datetime.now(UTC),))
 
     def succeed(self, job_id: str, output_key: str) -> None:
         self._update(
             job_id,
             "status = 'SUCCEEDED', output_path = ?, failure_code = NULL, updated_at = ?",
-            (output_key, _timestamp(datetime.now(UTC))),
+            (output_key, datetime.now(UTC)),
         )
 
     def fail(self, job_id: str, failure_code: str) -> None:
         self._update(
             job_id,
             "status = 'FAILED', failure_code = ?, updated_at = ?",
-            (failure_code, _timestamp(datetime.now(UTC))),
+            (failure_code, datetime.now(UTC)),
         )
 
     def _update(self, job_id: str, clause: str, values: tuple[object, ...]) -> None:
@@ -419,7 +409,7 @@ class SqliteTryOnStore:
             rows = connection.execute(
                 "SELECT * FROM tryon_jobs WHERE user_id = ? AND expires_at > ? "
                 "ORDER BY created_at DESC LIMIT ?",
-                (user_id, _timestamp(datetime.now(UTC)), limit),
+                (user_id, datetime.now(UTC), limit),
             ).fetchall()
         return [_job_from_row(row) for row in rows]
 
@@ -429,7 +419,7 @@ class SqliteTryOnStore:
             connection.execute(
                 "UPDATE tryon_jobs SET saved = ?, expires_at = ?, updated_at = ? "
                 "WHERE id = ? AND user_id = ? AND status = 'SUCCEEDED'",
-                (int(saved), expires_at, _timestamp(datetime.now(UTC)), job_id, user_id),
+                (int(saved), expires_at, datetime.now(UTC), job_id, user_id),
             )
         return self.get(job_id, user_id)
 
@@ -437,7 +427,7 @@ class SqliteTryOnStore:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE tryon_jobs SET feedback = ?, updated_at = ? WHERE id = ? AND user_id = ?",
-                (feedback, _timestamp(datetime.now(UTC)), job_id, user_id),
+                (feedback, datetime.now(UTC), job_id, user_id),
             )
         return self.get(job_id, user_id)
 
@@ -453,7 +443,7 @@ class SqliteTryOnStore:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE tryon_jobs SET status = 'QUEUED', updated_at = ? WHERE status = 'PROCESSING'",
-                (_timestamp(datetime.now(UTC)),),
+                (datetime.now(UTC),),
             )
             rows = connection.execute(
                 "SELECT id FROM tryon_jobs WHERE status = 'QUEUED' ORDER BY created_at ASC"
@@ -461,7 +451,7 @@ class SqliteTryOnStore:
         return [str(row["id"]) for row in rows]
 
     def cleanup_expired(self) -> list[str]:
-        now = _timestamp(datetime.now(UTC))
+        now = datetime.now(UTC)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT output_path FROM tryon_jobs WHERE expires_at <= ?", (now,)
@@ -470,7 +460,7 @@ class SqliteTryOnStore:
         return [str(row["output_path"]) for row in rows if row["output_path"]]
 
 
-def _job_from_row(row: sqlite3.Row) -> TryOnJob:
+def _job_from_row(row: Any) -> TryOnJob:
     raw_profile = json.loads(row["body_profile_json"] or "{}")
     if not raw_profile:
         raw_profile = _legacy_profile().to_dict()
@@ -752,7 +742,7 @@ class VirtualTryOnService:
         provider: HttpVirtualTryOnProvider | None = None,
     ) -> None:
         self.settings = settings
-        self.store = store or SqliteTryOnStore(settings.database_path)
+        self.store = store or PostgresTryOnStore(settings)
         self.media_store = media_store or LocalMediaStore(settings.media_dir / "results")
         self.dispatcher = dispatcher or LocalDispatcher()
         self.provider = provider or HttpVirtualTryOnProvider(settings)
@@ -908,10 +898,16 @@ def build_virtual_try_on_service(settings: VirtualTryOnSettings | None = None) -
 
         store = RedisTryOnStore(resolved)
         dispatcher = RedisJobDispatcher(resolved)
+    elif resolved.database_url:
+        store = PostgresTryOnStore(resolved)
     if resolved.s3_bucket:
         from app.core.try_on_runtime import S3MediaStore
 
         media_store = S3MediaStore(resolved)
+    if store is None:
+        raise RuntimeError(
+            "VTO_REDIS_URL or VTO_DATABASE_URL is required for the try-on job store."
+        )
     return VirtualTryOnService(
         resolved,
         store=store,

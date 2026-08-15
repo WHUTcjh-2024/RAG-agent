@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
-import sqlite3
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +10,7 @@ from shutil import copyfile
 from types import SimpleNamespace
 
 import pytest
+import psycopg
 from fastapi.testclient import TestClient
 
 
@@ -31,16 +32,23 @@ from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
 from app.core.agent.wardrobe import WardrobeItem, WardrobeSnapshot
 from app.main import app
+from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
 def create_workflow(
     root: Path,
     *,
-    session_db: Path | None = None,
-    checkpoint_db: Path | None = None,
     reason_generator: GroundedRecommendationGenerator | None = None,
 ) -> tuple[RecoverableShoppingAgentWorkflow, ShoppingAgentOrchestrator]:
+    # The PostgreSQL-backed stores read their connection URL from the
+    # environment; without one there is nothing to test against.
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
+    require_postgres("AGENT_CHECKPOINT_DATABASE_URL")
+    # Self-initialise the schema the way the deploy-time migrations would, so
+    # the tests are self-contained against a fresh database.
+    os.environ["AGENT_MEMORY_AUTO_SETUP"] = "true"
+    os.environ["AGENT_CHECKPOINT_AUTO_SETUP"] = "true"
     text_index, image_index, _ = build_fixture_indexes(root / "indexes")
     orchestrator = ShoppingAgentOrchestrator(
         text_retriever=TextRetriever(text_index),
@@ -50,13 +58,10 @@ def create_workflow(
             image_index,
             image_device="cpu",
         ),
-        memory=AgentMemoryStore(session_db or root / "sessions.db"),
+        memory=AgentMemoryStore(),
         reason_generator=reason_generator,
     )
-    workflow = RecoverableShoppingAgentWorkflow(
-        orchestrator,
-        checkpoint_db or root / "checkpoints.db",
-    )
+    workflow = RecoverableShoppingAgentWorkflow(orchestrator)
     return workflow, orchestrator
 
 
@@ -108,14 +113,18 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
     assert state["react_observations"][0]["tool"] == "search_products_by_text"
     assert state["react_stop_reason"] == "sufficient_evidence"
 
-    with sqlite3.connect(tmp_path / "checkpoints.db") as connection:
+    checkpoint_url = os.environ["AGENT_CHECKPOINT_DATABASE_URL"]
+    with psycopg.connect(checkpoint_url, connect_timeout=5) as connection:
         tables = {
-            row[0]
+            str(row["table_name"])
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
             )
         }
-    assert {"checkpoints", "writes"} <= tables
+    # LangGraph's PostgresSaver creates these two tables for checkpoints and
+    # the per-write payloads.
+    assert {"checkpoints", "checkpoint_writes"} <= tables
 
 
 def test_react_loop_replans_after_empty_search_and_stops_at_evidence(
@@ -333,13 +342,7 @@ def test_transient_retrieval_error_retries_only_failed_node(tmp_path: Path) -> N
 def test_process_restart_resumes_last_checkpoint_without_repeating_nodes(
     tmp_path: Path,
 ) -> None:
-    session_db = tmp_path / "sessions.db"
-    checkpoint_db = tmp_path / "checkpoints.db"
-    first, first_orchestrator = create_workflow(
-        tmp_path / "first",
-        session_db=session_db,
-        checkpoint_db=checkpoint_db,
-    )
+    first, first_orchestrator = create_workflow(tmp_path / "first")
 
     def unavailable_retrieval(_name, _arguments):
         raise RuntimeError("retrieval is offline")
@@ -350,11 +353,7 @@ def test_process_restart_resumes_last_checkpoint_without_repeating_nodes(
     failed_state = first.get_task_state("restart-task")
     first.close()
 
-    second, _ = create_workflow(
-        tmp_path / "second",
-        session_db=session_db,
-        checkpoint_db=checkpoint_db,
-    )
+    second, _ = create_workflow(tmp_path / "second")
     try:
         response = invoke_recommendation(
             second,
@@ -382,13 +381,7 @@ def test_process_restart_resumes_last_checkpoint_without_repeating_nodes(
 def test_image_recovery_accepts_reuploaded_file_when_saved_path_is_gone(
     tmp_path: Path,
 ) -> None:
-    session_db = tmp_path / "image-sessions.db"
-    checkpoint_db = tmp_path / "image-checkpoints.db"
-    first, first_orchestrator = create_workflow(
-        tmp_path / "image-first",
-        session_db=session_db,
-        checkpoint_db=checkpoint_db,
-    )
+    first, first_orchestrator = create_workflow(tmp_path / "image-first")
     fixture_image = (
         tmp_path / "image-first" / "indexes" / "images" / "000" / "0000000001.jpg"
     )
@@ -412,11 +405,7 @@ def test_image_recovery_accepts_reuploaded_file_when_saved_path_is_gone(
     old_upload.unlink()
     first.close()
 
-    second, _ = create_workflow(
-        tmp_path / "image-second",
-        session_db=session_db,
-        checkpoint_db=checkpoint_db,
-    )
+    second, _ = create_workflow(tmp_path / "image-second")
     try:
         response = second.invoke(
             task_id="image-restart-task",
@@ -492,14 +481,19 @@ def test_api_streams_real_node_trace_and_feature_flag_falls_back(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    memory_url = os.getenv("AGENT_MEMORY_DATABASE_URL")
+    checkpoint_url = os.getenv("AGENT_CHECKPOINT_DATABASE_URL")
+    if not memory_url or not checkpoint_url:
+        pytest.skip(
+            "AGENT_MEMORY_DATABASE_URL / AGENT_CHECKPOINT_DATABASE_URL are required "
+            "for the live API workflow integration test."
+        )
     text_index, image_index, _ = build_fixture_indexes(tmp_path / "api-indexes")
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))
     monkeypatch.setenv("IMAGE_INDEX_DIR", str(image_index))
-    monkeypatch.setenv("SESSION_DB_PATH", str(tmp_path / "api-sessions.db"))
-    monkeypatch.setenv(
-        "AGENT_CHECKPOINT_DB_PATH",
-        str(tmp_path / "api-checkpoints.db"),
-    )
+    monkeypatch.setenv("AGENT_MEMORY_DATABASE_URL", memory_url)
+    monkeypatch.setenv("AGENT_CHECKPOINT_DATABASE_URL", checkpoint_url)
+    monkeypatch.setenv("AGENT_CHECKPOINT_AUTO_SETUP", "true")
     monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "test-agent-context-token")
     monkeypatch.setenv("AGENT_WORKFLOW_ENABLED", "true")
     get_memory.cache_clear()

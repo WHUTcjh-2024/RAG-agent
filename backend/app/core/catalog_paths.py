@@ -7,7 +7,6 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CATALOG_DIR = BACKEND_DIR / "data" / "tianchi-catalog"
 DEFAULT_CATALOG_IMAGE_DIR = DEFAULT_CATALOG_DIR / "images"
-DEFAULT_SQLITE_PATH = BACKEND_DIR / "data" / "sqlite" / "app.db"
 DEFAULT_TEXT_INDEX_DIR = BACKEND_DIR / "data" / "vector_store" / "text"
 DEFAULT_IMAGE_INDEX_DIR = BACKEND_DIR / "data" / "vector_store" / "image"
 
