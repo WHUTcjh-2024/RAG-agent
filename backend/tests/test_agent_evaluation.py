@@ -17,6 +17,7 @@ from app.core.agent.evaluation import AgentEvaluationRunner, JudgeResult, summar
 from app.core.retrieval.text_retriever import TextRetriever
 from scripts import evaluate_recommendations
 from scripts.evaluate_recommendations import _require_labeled_cases
+from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
@@ -71,6 +72,7 @@ def _facts() -> dict:
 
 
 def test_executable_agent_evaluation_reports_all_p0_metrics(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, _ = build_fixture_indexes(tmp_path / "indexes")
     cases = [
         {
@@ -139,6 +141,7 @@ def test_executable_agent_evaluation_reports_all_p0_metrics(tmp_path: Path) -> N
 
 
 def test_judge_outage_does_not_discard_the_executable_trace(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, _ = build_fixture_indexes(tmp_path / "indexes")
     traces = AgentEvaluationRunner(TextRetriever(text_index)).run(
         [

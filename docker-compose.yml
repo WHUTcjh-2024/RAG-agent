@@ -47,6 +47,8 @@ services:
       retries: 12
       start_period: 30s
   backend-init:
+    build:
+      context: ./backend
     image: rag-agent-backend
     depends_on:
       postgres:

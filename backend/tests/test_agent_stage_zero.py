@@ -81,6 +81,7 @@ def test_overlong_session_id_returns_specific_error() -> None:
 
 
 def test_stream_error_is_classified_and_contains_request_id(monkeypatch) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     chat_module = importlib.import_module("app.api.chat")
 
     class FailingOrchestrator:

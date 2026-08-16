@@ -41,6 +41,7 @@ def create_orchestrator(root: Path) -> ShoppingAgentOrchestrator:
 
 
 def test_registry_contains_real_langchain_tools(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     orchestrator = create_orchestrator(tmp_path)
     assert len(orchestrator.registry.tools) == 6
     assert all(isinstance(tool, BaseTool) for tool in orchestrator.registry.tools)
@@ -49,6 +50,7 @@ def test_registry_contains_real_langchain_tools(tmp_path: Path) -> None:
 
 
 def test_agent_recommend_compare_and_handoff_cart(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     orchestrator = create_orchestrator(tmp_path)
     session_id = "agent-flow"
 
@@ -259,6 +261,7 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
 def test_text_agent_works_without_optional_image_index(
     tmp_path: Path, monkeypatch
 ) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, query_image = build_fixture_indexes(tmp_path / "fixtures")
     missing_image_index = tmp_path / "missing-image-index"
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))

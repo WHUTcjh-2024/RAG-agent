@@ -7,6 +7,26 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # All durable stores moved from SQLite to PostgreSQL; the integration
+      # tests and the agent-harness evaluation need a real database to run
+      # against (they self-provision their schema via *_AUTO_SETUP).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: atelier_test
+          POSTGRES_USER: atelier
+          POSTGRES_PASSWORD: atelier-ci-postgres-password
+        options: >-
+          --health-cmd "pg_isready -U atelier -d atelier_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGENT_MEMORY_DATABASE_URL: postgresql://atelier:atelier-ci-postgres-password@localhost:5432/atelier_test
+      AGENT_CHECKPOINT_DATABASE_URL: postgresql://atelier:atelier-ci-postgres-password@localhost:5432/atelier_test
+      AGENT_MEMORY_AUTO_SETUP: "true"
+      AGENT_CHECKPOINT_AUTO_SETUP: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
