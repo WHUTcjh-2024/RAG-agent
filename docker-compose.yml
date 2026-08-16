@@ -60,10 +60,10 @@ services:
       - sh
       - -c
       - >-
-        python scripts/setup_catalog.py &&
-        python scripts/build_catalog.py &&
-        python scripts/setup_agent_memory.py &&
-        python scripts/setup_agent_checkpoint.py
+        PYTHONPATH=/app python scripts/setup_catalog.py &&
+        PYTHONPATH=/app python scripts/build_catalog.py &&
+        PYTHONPATH=/app python scripts/setup_agent_memory.py &&
+        PYTHONPATH=/app python scripts/setup_agent_checkpoint.py
     restart: "no"
   postgres:
     image: postgres:16-alpine

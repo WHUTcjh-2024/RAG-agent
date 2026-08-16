@@ -99,7 +99,6 @@ def _optional_float(value: object) -> float | None:
 
 @dataclass(frozen=True)
 class VirtualTryOnSettings:
-    database_url: str = ""
     media_dir: Path
     provider_url: str
     provider_api_key: str
@@ -110,6 +109,7 @@ class VirtualTryOnSettings:
     max_concurrent_jobs: int
     rate_limit_count: int
     rate_limit_window_seconds: int
+    database_url: str = ""
     redis_url: str = ""
     redis_prefix: str = "fitme:vto"
     s3_endpoint_url: str = ""
