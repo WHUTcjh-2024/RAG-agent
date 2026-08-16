@@ -17,6 +17,8 @@ jobs:
           POSTGRES_DB: atelier_test
           POSTGRES_USER: atelier
           POSTGRES_PASSWORD: atelier-ci-postgres-password
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U atelier -d atelier_test"
           --health-interval 10s
