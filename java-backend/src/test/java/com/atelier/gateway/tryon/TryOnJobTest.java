@@ -41,4 +41,17 @@ class TryOnJobTest {
 
         assertThatThrownBy(() -> job.save(true, Duration.ofDays(7))).isInstanceOf(ApiException.class);
     }
+
+    @Test
+    void expiryIsTerminalAndMakesTheFailureReasonExplicit() {
+        TryOnJob job = TryOnJob.create(
+            UUID.randomUUID(), "dress-1", "dress", "{}", "try-on-key-0001", Duration.ofHours(24)
+        );
+
+        job.expire();
+
+        assertThat(job.getStatus()).isEqualTo(TryOnStatus.EXPIRED);
+        assertThat(job.getFailureCode()).isEqualTo("RESULT_EXPIRED");
+        assertThatThrownBy(job::claim).isInstanceOf(ApiException.class);
+    }
 }

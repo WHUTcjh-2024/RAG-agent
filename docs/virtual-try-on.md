@@ -25,11 +25,12 @@
 }
 ```
 
-响应为 `202`。客户端通过 `GET /api/try-on/jobs/{id}` 轮询 `QUEUED`、`PROCESSING`、`SUCCEEDED` 或 `FAILED`。成功结果使用 15 分钟签名 URL，默认保留 24 小时；主动保存后保留 7 天。
+响应为 `202`。客户端通过 `GET /api/try-on/jobs/{id}` 轮询 `QUEUED`、`PROCESSING`、`SUCCEEDED`、`FAILED` 或 `EXPIRED`。成功结果使用 15 分钟签名 URL，默认保留 24 小时；主动保存后保留 7 天。
 
 消费闭环接口：
 
 - `GET /api/try-on/jobs`：最近试穿。
+- `GET /api/try-on/jobs/{id}/events`：任务状态轨迹。
 - `POST /api/try-on/jobs/{id}/save`：保存或取消保存。
 - `POST /api/try-on/jobs/{id}/share`：创建短时分享地址。
 - `POST /api/try-on/jobs/{id}/feedback`：记录质量评分与问题类型。

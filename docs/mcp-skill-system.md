@@ -12,7 +12,7 @@
 | `try_on_create_preview` | 试穿服务 | CONFIRMATION_REQUIRED | 创建异步预览，不含真人照片 |
 | `cart_prepare_add` | Java 购物车服务 | CONFIRMATION_REQUIRED | 仅签发确认令牌，绝不写购物车 |
 
-所有工具返回 `api_version`、策略、权威来源和结构化数据；所有调用写入不含 prompt/结果正文的 OTel Trace。MCP 没有订单、支付或直接购物车写工具。最终加购必须由客户端把确认令牌提交给 Java `POST /api/cart/agent-actions/confirm`。
+所有工具返回 `api_version`、策略、权威来源和结构化数据；所有调用写入不含 prompt/结果正文的 OTel Trace。MCP 没有订单、支付或直接购物车写工具。最终加购必须由客户端把确认令牌提交给 Java `POST /api/cart/agent-actions/confirm`。Java 会用版本化规则校验目录、价格、数量和库存，并保存判定结果；可通过 `GET /api/cart/agent-actions/{actionId}/reconciliation` 查询后续购物车对账状态。
 
 ## 认证与部署
 
