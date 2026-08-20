@@ -53,6 +53,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      java-backend:
+        condition: service_healthy
     environment:
       CATALOG_DIR: /app/data/tianchi-catalog
       CATALOG_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -97,8 +99,6 @@ services:
   java-backend:
     build: ./java-backend
     depends_on:
-      backend:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -138,6 +138,8 @@ services:
     build: ./frontend
     depends_on:
       java-backend:
+        condition: service_healthy
+      backend:
         condition: service_healthy
     ports:
       - "5173:80"

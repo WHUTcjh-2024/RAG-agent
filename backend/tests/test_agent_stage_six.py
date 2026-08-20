@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
+import psycopg
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -38,19 +41,21 @@ def test_task_cancellation_prevents_workflow_write_and_session_deletion_removes_
     tmp_path: Path,
 ) -> None:
     workflow, orchestrator = create_workflow(tmp_path)
+    task_id = f"cancelled-task-{uuid4().hex}"
+    session_id = f"session-six-{uuid4().hex}"
     try:
-        orchestrator.memory.register_task("cancelled-task", "session-six", "session-six")
-        assert orchestrator.memory.cancel_task("cancelled-task", "session-six", "session-six")
+        orchestrator.memory.register_task(task_id, session_id, session_id)
+        assert orchestrator.memory.cancel_task(task_id, session_id, session_id)
         with pytest.raises(AgentException) as error:
             list(
                 workflow.stream(
-                    task_id="cancelled-task",
+                    task_id=task_id,
                     message="recommend a red shirt",
-                    session_id="session-six",
+                    session_id=session_id,
                 )
             )
         assert error.value.code == ErrorCode.TASK_CANCELLED
-        assert orchestrator.memory.recent_history("session-six") == []
+        assert orchestrator.memory.recent_history(session_id) == []
 
         orchestrator.memory.add_user_message("delete-six", "private request")
         orchestrator.memory.delete_session("delete-six")
@@ -62,15 +67,34 @@ def test_task_cancellation_prevents_workflow_write_and_session_deletion_removes_
 def test_checkpoint_ttl_removes_expired_task_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("CHECKPOINT_TTL_SECONDS", "1")
     workflow, _ = create_workflow(tmp_path)
+    task_id = f"expired-task-{uuid4().hex}"
     try:
-        workflow._register_checkpoint_task("expired-task")
-        workflow._connection.execute(
-            "UPDATE agent_checkpoint_ttls SET updated_at='2000-01-01 00:00:00' WHERE task_id='expired-task'"
+        workflow.invoke(
+            task_id=task_id,
+            message="recommend a red shirt",
+            session_id=f"expired-session-{uuid4().hex}",
         )
-        assert workflow._cleanup_expired_checkpoints() == 1
-        row = workflow._connection.execute(
-            "SELECT 1 FROM agent_checkpoint_ttls WHERE task_id='expired-task'"
-        ).fetchone()
+        checkpoint_url = os.environ["AGENT_CHECKPOINT_DATABASE_URL"]
+        with psycopg.connect(checkpoint_url, connect_timeout=5) as connection:
+            updated = connection.execute(
+                """
+                UPDATE checkpoints
+                SET checkpoint = jsonb_set(
+                    checkpoint,
+                    '{ts}',
+                    to_jsonb('2000-01-01T00:00:00+00:00'::text)
+                )
+                WHERE thread_id = %s
+                """,
+                (task_id,),
+            ).rowcount
+        assert updated > 0
+        assert workflow._cleanup_expired_checkpoints() > 0
+        with psycopg.connect(checkpoint_url, connect_timeout=5) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM checkpoints WHERE thread_id = %s",
+                (task_id,),
+            ).fetchone()
         assert row is None
     finally:
         workflow.close()

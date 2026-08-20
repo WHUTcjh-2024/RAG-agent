@@ -66,7 +66,7 @@ def _catalog(tmp_path: Path) -> tuple[str, Path]:
             """
         )
         connection.execute(
-            "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO products VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT(article_id) DO UPDATE SET image_path = excluded.image_path",
             ("dress-1", "Cerise Dress", "连衣裙", "服装", "连衣裙", "images/garment.jpg"),
         )

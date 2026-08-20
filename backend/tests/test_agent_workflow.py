@@ -36,6 +36,38 @@ from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
+def _truncate_existing_tables(connection: psycopg.Connection, tables: tuple[str, ...]) -> None:
+    existing = [
+        table
+        for table in tables
+        if connection.execute("SELECT to_regclass(%s)", (f"public.{table}",)).fetchone()[0]
+    ]
+    if existing:
+        connection.execute(f"TRUNCATE TABLE {', '.join(existing)} CASCADE")
+
+
+@pytest.fixture(autouse=True)
+def isolate_postgres_workflow_state() -> None:
+    """Keep fixed workflow fixtures independent when CI shares PostgreSQL."""
+    memory_url = os.environ.get("AGENT_MEMORY_DATABASE_URL")
+    checkpoint_url = os.environ.get("AGENT_CHECKPOINT_DATABASE_URL")
+    if not memory_url or not checkpoint_url:
+        yield
+        return
+
+    with psycopg.connect(memory_url, connect_timeout=5) as connection:
+        _truncate_existing_tables(
+            connection,
+            ("agent_actions", "agent_task_controls", "agent_task_commits", "agent_sessions"),
+        )
+    with psycopg.connect(checkpoint_url, connect_timeout=5) as connection:
+        _truncate_existing_tables(
+            connection,
+            ("checkpoint_writes", "checkpoint_blobs", "checkpoints"),
+        )
+    yield
+
+
 def create_workflow(
     root: Path,
     *,
@@ -116,7 +148,7 @@ def test_recommendation_executes_documented_nodes_and_persists_state(
     checkpoint_url = os.environ["AGENT_CHECKPOINT_DATABASE_URL"]
     with psycopg.connect(checkpoint_url, connect_timeout=5) as connection:
         tables = {
-            str(row["table_name"])
+            str(row[0])
             for row in connection.execute(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'public'"

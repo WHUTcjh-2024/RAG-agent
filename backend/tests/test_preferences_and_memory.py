@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -52,11 +53,12 @@ def test_english_preferences_are_structured() -> None:
 def test_memory_survives_store_recreation(tmp_path: Path) -> None:
     require_postgres("AGENT_MEMORY_DATABASE_URL")
     os.environ["AGENT_MEMORY_AUTO_SETUP"] = "true"
+    session_id = f"memory-recreation-{uuid4().hex}"
     first = AgentMemoryStore()
-    first.update_slots("session", {"color": "Red"})
-    first.add_user_message("session", "红色衬衫")
+    first.update_slots(session_id, {"color": "Red"})
+    first.add_user_message(session_id, "红色衬衫")
 
-    restored = AgentMemoryStore().get("session")
+    restored = AgentMemoryStore().get(session_id)
     assert restored.slots == {"color": "Red"}
     assert restored.history.messages[0].content == "红色衬衫"
 
@@ -64,10 +66,12 @@ def test_memory_survives_store_recreation(tmp_path: Path) -> None:
 def test_commit_turn_is_idempotent_across_store_recreation(tmp_path: Path) -> None:
     require_postgres("AGENT_MEMORY_DATABASE_URL")
     os.environ["AGENT_MEMORY_AUTO_SETUP"] = "true"
+    session_id = f"memory-idempotency-{uuid4().hex}"
+    task_id = f"persistent-task-{uuid4().hex}"
     first = AgentMemoryStore()
     assert first.commit_turn(
-        task_id="persistent-task",
-        session_id="session",
+        task_id=task_id,
+        session_id=session_id,
         user_content="推荐红色衬衫",
         assistant_content="已找到候选商品",
         slots={"color": "Red"},
@@ -76,14 +80,14 @@ def test_commit_turn_is_idempotent_across_store_recreation(tmp_path: Path) -> No
 
     second = AgentMemoryStore()
     assert not second.commit_turn(
-        task_id="persistent-task",
-        session_id="session",
+        task_id=task_id,
+        session_id=session_id,
         user_content="推荐红色衬衫",
         assistant_content="已找到候选商品",
         slots={"color": "Red"},
         last_results=["0000000001"],
     )
-    assert len(second.recent_history("session")) == 2
+    assert len(second.recent_history(session_id)) == 2
 
 
 def test_commerce_fields_are_explicit_without_fabricated_inventory() -> None:
