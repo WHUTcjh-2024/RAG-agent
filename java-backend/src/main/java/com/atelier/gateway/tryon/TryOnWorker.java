@@ -75,6 +75,18 @@ public class TryOnWorker {
         }
     }
 
+    @Scheduled(fixedDelayString = "${tryon.expiry-interval-ms:60000}")
+    public void expireDueJobs() {
+        try {
+            List<UUID> expired = tryOnService.expireDueJobs(properties.queueCapacity());
+            if (!expired.isEmpty()) {
+                LOGGER.info("expired try-on jobs count={}", expired.size());
+            }
+        } catch (RuntimeException exception) {
+            LOGGER.error("try-on expiry sweep failed", exception);
+        }
+    }
+
     private void dispatch(List<TryOnQueue.QueueMessage> messages) {
         for (TryOnQueue.QueueMessage message : messages) {
             try {
@@ -101,13 +113,15 @@ public class TryOnWorker {
         }
         try {
             byte[] image = inferenceClient.render(job);
-            tryOnService.succeed(jobId, image);
-            LOGGER.info("try-on job succeeded jobId={} attempt={}", jobId, job.getAttemptCount());
+            if (tryOnService.succeed(jobId, image)) {
+                LOGGER.info("try-on job succeeded jobId={} attempt={}", jobId, job.getAttemptCount());
+            } else {
+                LOGGER.info("try-on job expired before result persistence jobId={}", jobId);
+            }
         } catch (TryOnInferenceClient.RetryableTryOnException exception) {
             completeRetryableFailure(job, exception.getCode(), exception);
         } catch (ApiException exception) {
-            tryOnService.fail(jobId, "PROVIDER_REJECTED");
-            LOGGER.warn("try-on job rejected jobId={} status={}", jobId, exception.getStatus());
+            completeRejectedFailure(jobId, exception);
         } catch (RuntimeException exception) {
             completeRetryableFailure(job, "INTERNAL_ERROR", exception);
         } finally {
@@ -125,12 +139,30 @@ public class TryOnWorker {
     }
 
     private void completeRetryableFailure(TryOnJob job, String code, RuntimeException exception) {
-        if (job.getAttemptCount() < tryOnService.maxAttempts()) {
-            tryOnService.retry(job.getId());
-            LOGGER.warn("try-on job scheduled for retry jobId={} attempt={} code={}", job.getId(), job.getAttemptCount(), code);
-            return;
+        try {
+            if (job.getAttemptCount() < tryOnService.maxAttempts()) {
+                tryOnService.retry(job.getId());
+                LOGGER.warn(
+                    "try-on job scheduled for retry jobId={} attempt={} code={}",
+                    job.getId(),
+                    job.getAttemptCount(),
+                    code
+                );
+                return;
+            }
+            tryOnService.fail(job.getId(), code);
+            LOGGER.warn("try-on job failed jobId={} code={}", job.getId(), code, exception);
+        } catch (ApiException stateChanged) {
+            LOGGER.info("try-on job failure ignored because state changed jobId={}", job.getId());
         }
-        tryOnService.fail(job.getId(), code);
-        LOGGER.warn("try-on job failed jobId={} code={}", job.getId(), code, exception);
+    }
+
+    private void completeRejectedFailure(UUID jobId, ApiException exception) {
+        try {
+            tryOnService.fail(jobId, "PROVIDER_REJECTED");
+            LOGGER.warn("try-on job rejected jobId={} status={}", jobId, exception.getStatus());
+        } catch (ApiException stateChanged) {
+            LOGGER.info("try-on job rejection ignored because state changed jobId={}", jobId);
+        }
     }
 }

@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 public class TryOnService {
     private final TryOnJobRepository jobRepository;
+    private final TryOnJobEventRepository jobEventRepository;
     private final CatalogProductGateway catalogProductGateway;
     private final JwtTokenService jwtTokenService;
     private final UserRepository userRepository;
@@ -34,6 +35,7 @@ public class TryOnService {
 
     public TryOnService(
         TryOnJobRepository jobRepository,
+        TryOnJobEventRepository jobEventRepository,
         CatalogProductGateway catalogProductGateway,
         JwtTokenService jwtTokenService,
         UserRepository userRepository,
@@ -45,6 +47,7 @@ public class TryOnService {
         TryOnQueue queue
     ) {
         this.jobRepository = jobRepository;
+        this.jobEventRepository = jobEventRepository;
         this.catalogProductGateway = catalogProductGateway;
         this.jwtTokenService = jwtTokenService;
         this.userRepository = userRepository;
@@ -82,6 +85,7 @@ public class TryOnService {
         );
         try {
             TryOnJob created = jobRepository.saveAndFlush(job);
+            recordTransition(created, null, "CREATED");
             enqueueAfterCommit(created.getId());
             return new CreateResult(created, true);
         } catch (DataIntegrityViolationException exception) {
@@ -149,27 +153,44 @@ public class TryOnService {
         if (job == null || job.getStatus() != TryOnStatus.QUEUED || job.getAvailableAt().isAfter(Instant.now())) {
             return null;
         }
+        if (!job.getExpiresAt().isAfter(Instant.now())) {
+            expire(job);
+            return null;
+        }
+        TryOnStatus previous = job.getStatus();
         job.claim();
+        recordTransition(job, previous, "CLAIMED");
         return job;
     }
 
     @Transactional
-    public void succeed(UUID jobId, byte[] image) {
+    public boolean succeed(UUID jobId, byte[] image) {
         TryOnJob job = requiredForUpdate(jobId, TryOnStatus.PROCESSING);
+        if (!job.getExpiresAt().isAfter(Instant.now())) {
+            expire(job);
+            return false;
+        }
         resultStore.put(jobId, image, Duration.between(Instant.now(), job.getExpiresAt()));
+        TryOnStatus previous = job.getStatus();
         job.succeed("redis:fitme:tryon:result:" + jobId);
+        recordTransition(job, previous, "RENDER_SUCCEEDED");
+        return true;
     }
 
     @Transactional
     public void retry(UUID jobId) {
         TryOnJob job = requiredForUpdate(jobId, TryOnStatus.PROCESSING);
+        TryOnStatus previous = job.getStatus();
         job.retryAt(Instant.now().plus(backoff(job.getAttemptCount())));
+        recordTransition(job, previous, "RETRY_SCHEDULED");
     }
 
     @Transactional
     public void fail(UUID jobId, String failureCode) {
         TryOnJob job = requiredForUpdate(jobId, TryOnStatus.PROCESSING);
+        TryOnStatus previous = job.getStatus();
         job.fail(failureCode);
+        recordTransition(job, previous, failureCode);
     }
 
     @Transactional(readOnly = true)
@@ -185,10 +206,13 @@ public class TryOnService {
             if (job == null || job.getStatus() != TryOnStatus.PROCESSING) {
                 continue;
             }
+            TryOnStatus previous = job.getStatus();
             if (job.getAttemptCount() < properties.maxAttempts()) {
                 job.retryAt(Instant.now());
+                recordTransition(job, previous, "WORKER_RECOVERED");
             } else {
                 job.fail("WORKER_LEASE_EXPIRED");
+                recordTransition(job, previous, "WORKER_LEASE_EXPIRED");
             }
             recovered.add(jobId);
         }
@@ -199,6 +223,26 @@ public class TryOnService {
 
     public String resultUrl(TryOnJob job) {
         return resultSigner.url(job);
+    }
+
+    @Transactional(readOnly = true)
+    public List<TryOnJobEvent> events(String authorization, UUID jobId) {
+        get(authorization, jobId);
+        return jobEventRepository.findByJobIdOrderByCreatedAtAsc(jobId);
+    }
+
+    @Transactional
+    public List<UUID> expireDueJobs(int limit) {
+        List<UUID> expired = new java.util.ArrayList<>();
+        for (UUID jobId : jobRepository.findExpiredJobIds(Instant.now(), limit)) {
+            TryOnJob job = jobRepository.findByIdForUpdate(jobId).orElse(null);
+            if (job == null || job.getStatus() == TryOnStatus.EXPIRED || job.getExpiresAt().isAfter(Instant.now())) {
+                continue;
+            }
+            expire(job);
+            expired.add(jobId);
+        }
+        return expired;
     }
 
     public record CreateResult(TryOnJob job, boolean created) { }
@@ -218,6 +262,18 @@ public class TryOnService {
             throw new ApiException(HttpStatus.CONFLICT, "Try-on job state changed");
         }
         return job;
+    }
+
+    private void expire(TryOnJob job) {
+        TryOnStatus previous = job.getStatus();
+        job.expire();
+        resultStore.delete(job.getId());
+        queue.release(job.getId());
+        recordTransition(job, previous, "RESULT_EXPIRED");
+    }
+
+    private void recordTransition(TryOnJob job, TryOnStatus previous, String reason) {
+        jobEventRepository.save(TryOnJobEvent.create(job, previous, reason));
     }
 
     private UUID currentUserId(String authorization) {

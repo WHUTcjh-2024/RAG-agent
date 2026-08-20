@@ -36,4 +36,12 @@ public interface TryOnJobRepository extends JpaRepository<TryOnJob, UUID> {
         LIMIT :limit
         """, nativeQuery = true)
     List<UUID> findStalledJobIds(@Param("stalledBefore") Instant stalledBefore, @Param("limit") int limit);
+
+    @Query(value = """
+        SELECT id FROM virtual_try_on_jobs
+        WHERE status IN ('QUEUED', 'PROCESSING', 'SUCCEEDED') AND expires_at <= :now
+        ORDER BY expires_at ASC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<UUID> findExpiredJobIds(@Param("now") Instant now, @Param("limit") int limit);
 }

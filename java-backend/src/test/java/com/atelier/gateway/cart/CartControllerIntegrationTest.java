@@ -54,6 +54,9 @@ class CartControllerIntegrationTest {
     private AgentCartActionCommitRepository actionCommitRepository;
 
     @Autowired
+    private CartActionReconciliationService reconciliationService;
+
+    @Autowired
     private WardrobeItemRepository wardrobeItemRepository;
 
     @Autowired
@@ -217,11 +220,30 @@ class CartControllerIntegrationTest {
             .jsonPath("$.id").isEqualTo(idFrom(first))
             .jsonPath("$.quantity").isEqualTo(1);
 
+        reconciliationService.reconcileDueActions();
+        webTestClient.get()
+            .uri("/api/cart/agent-actions/{actionId}/reconciliation", "action-1")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("MATCHED")
+            .jsonPath("$.ruleDecision").value(value -> assertThat(value.toString()).contains("cart_confirmation/v1"));
+
         webTestClient.delete()
             .uri("/api/cart/items/{itemId}", idFrom(first))
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
             .exchange()
             .expectStatus().isNoContent();
+
+        reconciliationService.reconcileAction("action-1");
+        webTestClient.get()
+            .uri("/api/cart/agent-actions/{actionId}/reconciliation", "action-1")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("CART_ITEM_MISSING");
 
         webTestClient.post()
             .uri("/api/cart/agent-actions/confirm")

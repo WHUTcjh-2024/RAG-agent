@@ -4,5 +4,6 @@ public enum TryOnStatus {
     QUEUED,
     PROCESSING,
     SUCCEEDED,
-    FAILED
+    FAILED,
+    EXPIRED
 }

@@ -52,6 +52,15 @@ public class CartController {
             .subscribeOn(Schedulers.boundedElastic());
     }
 
+    @GetMapping("/agent-actions/{actionId}/reconciliation")
+    public Mono<CartService.AgentActionReconciliationView> reconciliation(
+        @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+        @PathVariable String actionId
+    ) {
+        return Mono.fromCallable(() -> cartService.reconciliation(authorization, actionId))
+            .subscribeOn(Schedulers.boundedElastic());
+    }
+
     @PatchMapping("/items/{itemId}")
     public Mono<CartItemView> updateItem(
         @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization,

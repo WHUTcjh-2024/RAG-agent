@@ -72,6 +72,17 @@ public class TryOnController {
         return Mono.fromCallable(() -> view(tryOnService.get(authorization, jobId))).subscribeOn(Schedulers.boundedElastic());
     }
 
+    @GetMapping("/jobs/{jobId}/events")
+    public Mono<Map<String, List<StateEventView>>> events(
+        @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+        @PathVariable UUID jobId
+    ) {
+        return Mono.fromCallable(() -> Map.of(
+            "items",
+            tryOnService.events(authorization, jobId).stream().map(this::eventView).toList()
+        )).subscribeOn(Schedulers.boundedElastic());
+    }
+
     @PostMapping("/jobs/{jobId}/save")
     public Mono<JobView> save(
         @RequestHeader(name = HttpHeaders.AUTHORIZATION, required = false) String authorization,
@@ -137,7 +148,8 @@ public class TryOnController {
             job.getUpdatedAt(), job.getExpiresAt(), queued(job) ? 2 : null, job.getAttemptCount(),
             new ModelView("SYNTHETIC_ADULT", parse(job.getBodyProfileJson()), false),
             job.getStatus() == TryOnStatus.SUCCEEDED ? new ResultView(tryOnService.resultUrl(job)) : null,
-            job.getStatus() == TryOnStatus.FAILED ? Map.of("code", job.getFailureCode()) : null,
+            job.getStatus() == TryOnStatus.FAILED || job.getStatus() == TryOnStatus.EXPIRED
+                ? Map.of("code", job.getFailureCode()) : null,
             job.isSaved(), parseNullable(job.getFeedbackJson())
         );
     }
@@ -156,6 +168,16 @@ public class TryOnController {
 
     private JsonNode parseNullable(String value) { return value == null ? null : parse(value); }
 
+    private StateEventView eventView(TryOnJobEvent event) {
+        return new StateEventView(
+            event.getFromStatus(),
+            event.getToStatus(),
+            event.getReason(),
+            event.getAttemptCount(),
+            event.getCreatedAt()
+        );
+    }
+
     public record JobView(
         UUID id, String product_id, String category, TryOnStatus status, Instant created_at, Instant updated_at,
         Instant expires_at, Integer retry_after_seconds, int attempt_count, ModelView model, ResultView result,
@@ -163,4 +185,11 @@ public class TryOnController {
     ) { }
     public record ModelView(String kind, JsonNode body_profile, boolean uses_person_photo) { }
     public record ResultView(String url) { }
+    public record StateEventView(
+        TryOnStatus from_status,
+        TryOnStatus to_status,
+        String reason,
+        int attempt_count,
+        Instant created_at
+    ) { }
 }

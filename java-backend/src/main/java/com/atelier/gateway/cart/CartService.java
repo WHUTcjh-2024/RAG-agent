@@ -5,7 +5,10 @@ import com.atelier.gateway.cart.CartResponses.CartView;
 import com.atelier.gateway.catalog.CatalogProductGateway;
 import com.atelier.gateway.catalog.CatalogProductSnapshot;
 import com.atelier.gateway.common.ApiException;
+import com.atelier.gateway.decision.ProductSkuFact;
+import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.security.JwtTokenService;
+import java.math.BigDecimal;
 import com.atelier.gateway.user.UserRepository;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -20,6 +23,8 @@ public class CartService {
     private final AgentActionTokenService actionTokenService;
     private final AgentCartActionCommitRepository actionCommitRepository;
     private final CatalogProductGateway catalogProductGateway;
+    private final ProductSkuFactRepository productSkuFactRepository;
+    private final CartConfirmationRuleEngine confirmationRuleEngine;
 
     public CartService(
         CartItemRepository cartItemRepository,
@@ -27,7 +32,9 @@ public class CartService {
         JwtTokenService jwtTokenService,
         AgentActionTokenService actionTokenService,
         AgentCartActionCommitRepository actionCommitRepository,
-        CatalogProductGateway catalogProductGateway
+        CatalogProductGateway catalogProductGateway,
+        ProductSkuFactRepository productSkuFactRepository,
+        CartConfirmationRuleEngine confirmationRuleEngine
     ) {
         this.cartItemRepository = cartItemRepository;
         this.userRepository = userRepository;
@@ -35,6 +42,8 @@ public class CartService {
         this.actionTokenService = actionTokenService;
         this.actionCommitRepository = actionCommitRepository;
         this.catalogProductGateway = catalogProductGateway;
+        this.productSkuFactRepository = productSkuFactRepository;
+        this.confirmationRuleEngine = confirmationRuleEngine;
     }
 
     @Transactional
@@ -65,12 +74,23 @@ public class CartService {
             return CartItemView.from(priorItem);
         }
         CatalogProductSnapshot snapshot = catalogProductGateway.fetch(action.product_id());
-        if (snapshot.unitPrice().compareTo(expectedPrice(action.expected_price())) != 0) {
-            throw new ApiException(HttpStatus.CONFLICT, "Product price changed; request a new confirmation");
-        }
+        ProductSkuFact inventoryFact = productSkuFactRepository.findById(action.product_id()).orElse(null);
+        CartConfirmationRuleEngine.RuleDecision ruleDecision = confirmationRuleEngine.evaluate(
+            action,
+            snapshot,
+            inventoryFact
+        );
+        ruleDecision.requireAllowed();
         CartItem item = addItem(userId, snapshot, requireQuantity(action.quantity()));
         actionCommitRepository.save(AgentCartActionCommit.create(
-            action.action_id(), userId, action.product_id(), item.getId()
+            action.action_id(),
+            userId,
+            action.task_id(),
+            action.product_id(),
+            item.getId(),
+            expectedPrice(action.expected_price()),
+            action.quantity(),
+            ruleDecision.toAuditJson()
         ));
         return CartItemView.from(item);
     }
@@ -143,6 +163,26 @@ public class CartService {
         cartItemRepository.deleteByUserId(userId);
     }
 
+    @Transactional(readOnly = true)
+    public AgentActionReconciliationView reconciliation(
+        String authorizationHeader,
+        String actionId
+    ) {
+        UUID userId = currentUserId(authorizationHeader);
+        AgentCartActionCommit commit = actionCommitRepository.findById(actionId)
+            .filter(value -> value.getUserId().equals(userId))
+            .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Agent action was not found"));
+        return new AgentActionReconciliationView(
+            commit.getActionId(),
+            commit.getTaskId(),
+            commit.getProductId(),
+            commit.getReconciliationStatus(),
+            commit.getReconciliationMessage(),
+            commit.getReconciledAt(),
+            commit.getRuleDecisionJson()
+        );
+    }
+
     private UUID currentUserId(String authorizationHeader) {
         if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "Login required");
@@ -181,12 +221,12 @@ public class CartService {
         return quantity;
     }
 
-    private java.math.BigDecimal expectedPrice(String value) {
+    private BigDecimal expectedPrice(String value) {
         if (value == null || value.isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, "Agent confirmation is invalid or expired");
         }
         try {
-            return new java.math.BigDecimal(value);
+            return new BigDecimal(value);
         } catch (NumberFormatException exception) {
             throw new ApiException(HttpStatus.CONFLICT, "Agent confirmation is invalid or expired");
         }
@@ -195,4 +235,14 @@ public class CartService {
     private ApiException cartItemNotFound() {
         return new ApiException(HttpStatus.NOT_FOUND, "Cart item not found");
     }
+
+    public record AgentActionReconciliationView(
+        String actionId,
+        String taskId,
+        String productId,
+        CartActionReconciliationStatus status,
+        String message,
+        java.time.Instant reconciledAt,
+        String ruleDecision
+    ) { }
 }

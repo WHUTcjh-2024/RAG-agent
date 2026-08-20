@@ -11,7 +11,8 @@ Browser -> Java API -> PostgreSQL (job state) -> Redis Stream -> bounded Java Wo
 
 实现要点：
 
-- `virtual_try_on_jobs` 是权威状态机：`QUEUED -> PROCESSING -> SUCCEEDED | FAILED`；失败重试回到 `QUEUED`。
+- `virtual_try_on_jobs` 是权威状态机：`QUEUED -> PROCESSING -> SUCCEEDED | FAILED`；结果到期进入终态 `EXPIRED`，失败重试回到 `QUEUED`。
+- 每次状态变化都会写入 `virtual_try_on_job_events`，可通过 `GET /api/try-on/jobs/{id}/events` 按时间查看任务轨迹。
 - `POST /api/try-on/jobs` 要求 `Idempotency-Key`。PostgreSQL 唯一约束保证同一用户重放请求只创建一条任务。
 - Redis Stream consumer group 负责跨实例分发；Worker Pool 由 `TRYON_WORKER_COUNT` 和 `TRYON_QUEUE_CAPACITY` 严格限界。处理中实例异常时，超过 `TRYON_PROCESSING_LEASE` 的任务会被回收并重试。
 - Redis Lua 固定窗口实现每用户限流。结果图存入 Redis 并使用 TTL 清理；生产中若结果量大，应将 `TryOnResultStore` 换成私有对象存储实现。
@@ -28,6 +29,7 @@ TRYON_RATE_LIMIT_COUNT=10
 TRYON_RATE_LIMIT_WINDOW=10m
 TRYON_PROVIDER_TIMEOUT=90s
 TRYON_PROCESSING_LEASE=2m
+TRYON_EXPIRY_INTERVAL_MS=60000
 VTO_RESULT_SIGNING_SECRET=replace-with-a-random-secret
 AGENT_INTERNAL_TOKEN=replace-with-a-random-internal-token
 ```

@@ -114,6 +114,15 @@ public class TryOnJob {
         failureCode = code;
     }
 
+    public void expire() {
+        if (status == TryOnStatus.EXPIRED) {
+            return;
+        }
+        status = TryOnStatus.EXPIRED;
+        failureCode = "RESULT_EXPIRED";
+        updatedAt = Instant.now();
+    }
+
     public void save(boolean value, Duration ttl) {
         if (status != TryOnStatus.SUCCEEDED) {
             throw new ApiException(HttpStatus.CONFLICT, "Try-on result is not ready");
