@@ -3,8 +3,9 @@
 This replaces the previous SQLite-based stores. The backend standardised on `?`
 bind markers throughout its SQL, so the thin :class:`PgConnection` adapter
 translates them to psycopg's `%s` markers and normalises transaction-control
-statements. psycopg's ``Row`` supports both positional and by-name indexing, so
-legacy ``row[0]`` / ``row["col"]`` / ``dict(row)`` access keeps working unchanged.
+statements. psycopg returns plain tuples by default, so a custom row factory
+restores the sqlite3.Row-style access the stores rely on: ``row[0]`` /
+``row["col"]`` / ``dict(row)`` keep working unchanged.
 """
 
 from __future__ import annotations
@@ -19,9 +20,33 @@ except ImportError as error:  # pragma: no cover - production dependency guard
         "psycopg is required for the PostgreSQL backend."
     ) from error
 
-# One pool per resolved database URL so request paths reuse connections instead
-# of opening a new one per call.
-_POOLS: dict[str, "psycopg.ConnectionPool"] = {}
+class _SqliteLikeRow(dict):
+    """A row mapping that keeps sqlite3.Row-style access working on psycopg.
+
+    psycopg's default ``tuple_row`` yields plain tuples, which breaks the
+    ``row["col"]`` lookups used throughout the migrated stores.  This mapping
+    supports both ``row["col"]`` and positional ``row[0]`` access, plus
+    ``dict(row)`` and truthiness checks, matching the old sqlite3.Row API.
+    """
+
+    def __getitem__(self, key: int | str):
+        if isinstance(key, int):
+            key = tuple(self.keys())[key]
+        return super().__getitem__(key)
+
+
+def _sqlite_like_row_factory(cursor):
+    """psycopg ``row_factory`` that returns :class:`_SqliteLikeRow` instances."""
+    columns = (
+        [column.name for column in cursor.description]
+        if cursor.description
+        else []
+    )
+
+    def make_row(values):
+        return _SqliteLikeRow(zip(columns, values))
+
+    return make_row
 
 
 def database_url(env_var: str, default: str | None = None) -> str:
@@ -76,4 +101,5 @@ def connect(env_var: str, *, default: str | None = None) -> PgConnection:
     """Open a dedicated PostgreSQL connection for a single request/transaction."""
     url = database_url(env_var, default)
     connection = psycopg.connect(url, connect_timeout=5)
+    connection.row_factory = _sqlite_like_row_factory
     return PgConnection(connection)

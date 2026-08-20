@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from opentelemetry import metrics
 from PIL import Image, ImageOps, UnidentifiedImageError
+from psycopg import Error as PgError
 
 from app.core.catalog_paths import BACKEND_DIR
 from app.db.pg import PgConnection, connect as _pg_connect
@@ -244,7 +245,7 @@ class PostgresTryOnStore:
         self._initialize()
 
     def _connect(self) -> PgConnection:
-        return _pg_connect("VTO_DATABASE_URL")
+        return _pg_connect("VTO_DATABASE_URL", default=self._database_url)
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -321,6 +322,13 @@ class PostgresTryOnStore:
         now_value = now
         job_id = uuid4().hex
         with self._connect() as connection:
+            # SQLite previously used a database-wide immediate write lock here.
+            # Serializing only this user's transaction preserves strict rate limits
+            # and idempotency without penalizing unrelated users on Postgres.
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                (f"tryon:{user_id}",),
+            )
             if idempotency_key:
                 row = connection.execute(
                     "SELECT * FROM tryon_jobs WHERE user_id = ? AND idempotency_key = ?",
@@ -414,7 +422,7 @@ class PostgresTryOnStore:
         return [_job_from_row(row) for row in rows]
 
     def set_saved(self, job_id: str, user_id: str, saved: bool, ttl_hours: int) -> TryOnJob | None:
-        expires_at = _timestamp(datetime.now(UTC) + timedelta(hours=ttl_hours))
+        expires_at = datetime.now(UTC) + timedelta(hours=ttl_hours)
         with self._connect() as connection:
             connection.execute(
                 "UPDATE tryon_jobs SET saved = ?, expires_at = ?, updated_at = ? "
@@ -948,7 +956,7 @@ def load_catalog_product(product_id: str) -> dict[str, object]:
                 """,
                 (product_id,),
             ).fetchone()
-    except FileNotFoundError as error:
+    except (RuntimeError, PgError) as error:
         raise TryOnError("商品目录暂时不可用。", code="CATALOG_UNAVAILABLE", retryable=True) from error
     if row is None:
         raise TryOnError("未找到该商品。", code="PRODUCT_NOT_FOUND")

@@ -304,18 +304,23 @@ class AgentMemoryStore:
         session_id = validate_session_id(session_id)
         user_id = self._validate_owner_user_id(user_id)
         with self._lock, self._connect() as connection:
+            created = connection.execute(
+                """
+                INSERT INTO agent_sessions(session_id, owner_user_id)
+                VALUES (?, ?)
+                ON CONFLICT(session_id) DO NOTHING
+                RETURNING owner_user_id
+                """,
+                (session_id, user_id),
+            ).fetchone()
+            if created is not None:
+                return True
             row = connection.execute(
                 "SELECT owner_user_id FROM agent_sessions WHERE session_id=?",
                 (session_id,),
             ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO agent_sessions(session_id, owner_user_id) VALUES (?, ?)",
-                    (session_id, user_id),
-                )
-                return True
-            owner_user_id = row["owner_user_id"]
-            return owner_user_id is not None and str(owner_user_id) == user_id
+        owner_user_id = row["owner_user_id"] if row is not None else None
+        return owner_user_id is not None and str(owner_user_id) == user_id
 
     def task_ids_for_owned_session(self, session_id: str, user_id: str) -> list[str] | None:
         session_id = validate_session_id(session_id)

@@ -36,7 +36,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 
 部署前由一次性 migration Job 执行 `python scripts/setup_catalog.py`、`python scripts/build_catalog.py`、`python scripts/setup_agent_memory.py` 和 `python scripts/setup_agent_checkpoint.py`；运行时不自动建表。商品目录、Agent 会话与 checkpoint 现在全部使用 PostgreSQL，不再依赖 SQLite（`build_sqlite.py` 已移除）。LangGraph 官方将 SQLite 定位为本地/实验场景，并提供 `PostgresSaver` 作为生产数据库 checkpointer。[LangGraph persistence documentation](https://docs.langchain.com/oss/python/langgraph/persistence)
 
-Postgres checkpoint 和 Agent 会话数据分别由单一 CronJob/数据库 scheduler 清理，而不是由每个 API 副本在请求路径上扫表。部署任务可调用 `python scripts/prune_agent_checkpoints.py`（SQLite 开发模式）及 `python scripts/prune_agent_memory.py`（Postgres 会话）；checkpoint 的生产清理应执行下面 SQL。部署时根据实际 LangGraph 版本校验表名和迁移版本：
+Postgres checkpoint 和 Agent 会话数据分别由单一 CronJob/数据库 scheduler 清理，而不是由每个 API 副本在请求路径上扫表。部署任务可调用 `python scripts/prune_agent_checkpoints.py`（Postgres checkpoint）及 `python scripts/prune_agent_memory.py`（Postgres 会话）；checkpoint 的生产清理应执行下面 SQL。部署时根据实际 LangGraph 版本校验表名和迁移版本：
 
 ```sql
 DELETE FROM checkpoint_writes
