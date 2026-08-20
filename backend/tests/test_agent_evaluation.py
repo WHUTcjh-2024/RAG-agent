@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import json
 import sys
 from pathlib import Path
+
+import pytest
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -12,6 +16,8 @@ if str(BACKEND_DIR) not in sys.path:
 from app.core.agent.evaluation import AgentEvaluationRunner, JudgeResult, summarize_task_traces
 from app.core.retrieval.text_retriever import TextRetriever
 from scripts import evaluate_recommendations
+from scripts.evaluate_recommendations import _require_labeled_cases
+from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
@@ -66,6 +72,7 @@ def _facts() -> dict:
 
 
 def test_executable_agent_evaluation_reports_all_p0_metrics(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, _ = build_fixture_indexes(tmp_path / "indexes")
     cases = [
         {
@@ -134,6 +141,7 @@ def test_executable_agent_evaluation_reports_all_p0_metrics(tmp_path: Path) -> N
 
 
 def test_judge_outage_does_not_discard_the_executable_trace(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, _ = build_fixture_indexes(tmp_path / "indexes")
     traces = AgentEvaluationRunner(TextRetriever(text_index)).run(
         [
@@ -181,6 +189,45 @@ def test_evaluation_rejects_catalog_self_retrieval(tmp_path: Path, monkeypatch) 
     assert "self-retrieval" in payload["error"]
 
 
+def test_labeled_retrieval_requires_the_matching_catalog_snapshot() -> None:
+    cases = {
+        "catalog_snapshot": {"input_sha256": "labels-sha", "product_count": 1},
+        "labeled_retrieval": [
+            {
+                "id": "independent-query",
+                "query": "办公室通勤的浅色上衣",
+                "relevant_ids": ["0000000001"],
+            }
+        ],
+    }
+    catalog = {"0000000001": {"text_profile": "浅色衬衣商品目录"}}
+
+    with pytest.raises(ValueError, match="Catalog snapshot differs"):
+        _require_labeled_cases(
+            cases,
+            catalog,
+            {"input_sha256": "different-index-sha"},
+        )
+
+
+def test_labeled_retrieval_rejects_catalog_text_as_a_query() -> None:
+    query = "商品目录中的原始完整文本内容"
+    cases = {
+        "catalog_snapshot": {"input_sha256": "catalog-sha", "product_count": 1},
+        "labeled_retrieval": [
+            {
+                "id": "self-retrieval",
+                "query": query,
+                "relevant_ids": ["0000000001"],
+            }
+        ],
+    }
+    catalog = {"0000000001": {"text_profile": query}}
+
+    with pytest.raises(ValueError, match="repeats a catalog text profile"):
+        _require_labeled_cases(cases, catalog, {"input_sha256": "catalog-sha"})
+
+
 def test_tracked_catalog_snapshot_matches_ci_evaluation_input() -> None:
     cases = json.loads(
         (BACKEND_DIR / "evaluation" / "cases.json").read_text(encoding="utf-8")
@@ -191,3 +238,4 @@ def test_tracked_catalog_snapshot_matches_ci_evaluation_input() -> None:
     from scripts.build_text_index import file_sha256
 
     assert file_sha256(catalog) == expected_sha
+    assert cases["catalog_snapshot"]["product_count"] == 10

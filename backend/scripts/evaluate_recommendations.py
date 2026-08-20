@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import argparse
 import json
 import math
@@ -41,9 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report", type=Path, default=BACKEND_DIR / "evaluation" / "report.json"
     )
-    parser.add_argument("--minimum_recall_at_5", type=float, default=0.90)
-    parser.add_argument("--minimum_recall_at_10", type=float, default=0.85)
-    parser.add_argument("--minimum_ndcg_at_10", type=float, default=0.65)
+    parser.add_argument("--minimum_recall_at_1", type=float, default=0.70)
+    parser.add_argument("--minimum_recall_at_5", type=float, default=0.95)
+    parser.add_argument("--minimum_recall_at_10", type=float, default=0.95)
+    parser.add_argument("--minimum_mrr_at_10", type=float, default=0.80)
+    parser.add_argument("--minimum_ndcg_at_10", type=float, default=0.80)
     parser.add_argument("--minimum_intent_accuracy", type=float, default=0.90)
     parser.add_argument("--minimum_slot_accuracy", type=float, default=0.90)
     parser.add_argument("--minimum_task_success_rate", type=float, default=0.95)
@@ -93,6 +97,84 @@ def _configuration_error(args: argparse.Namespace, message: str) -> int:
     return 2
 
 
+def _require_labeled_cases(
+    cases: dict[str, Any],
+    catalog: dict[str, dict[str, Any]],
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Validate independent labels against the exact indexed catalog snapshot."""
+    labeled_cases = cases.get("labeled_retrieval")
+    if not isinstance(labeled_cases, list) or not labeled_cases:
+        raise ValueError(
+            "labeled_retrieval must contain independently authored query labels; "
+            "catalog self-retrieval is not valid evaluation."
+        )
+
+    snapshot = cases.get("catalog_snapshot")
+    if not isinstance(snapshot, dict):
+        raise ValueError("Evaluation cases must declare a catalog_snapshot binding.")
+    expected_sha = snapshot.get("input_sha256")
+    if not isinstance(expected_sha, str) or not expected_sha:
+        raise ValueError("catalog_snapshot.input_sha256 must be a non-empty string.")
+    if expected_sha != metadata.get("input_sha256"):
+        raise ValueError(
+            "Catalog snapshot differs from the labeled benchmark; refresh labels "
+            "before evaluating this index."
+        )
+    expected_count = snapshot.get("product_count")
+    if not isinstance(expected_count, int) or expected_count != len(catalog):
+        raise ValueError(
+            "catalog_snapshot.product_count must match the indexed catalog."
+        )
+
+    catalog_profiles = {
+        " ".join(str(product.get("text_profile") or "").split()).casefold()
+        for product in catalog.values()
+    }
+    validated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for position, case in enumerate(labeled_cases, start=1):
+        if not isinstance(case, dict):
+            raise ValueError(f"labeled_retrieval item {position} must be an object.")
+        case_id = case.get("id")
+        query = case.get("query")
+        relevant_ids = case.get("relevant_ids")
+        if not isinstance(case_id, str) or not case_id.strip() or case_id in seen_ids:
+            raise ValueError(
+                f"labeled_retrieval item {position} has an invalid or duplicate id."
+            )
+        if not isinstance(query, str) or len(query.strip()) < 8:
+            raise ValueError(
+                f"labeled_retrieval item {case_id} needs a substantive query."
+            )
+        if " ".join(query.split()).casefold() in catalog_profiles:
+            raise ValueError(
+                f"labeled_retrieval item {case_id} repeats a catalog text profile."
+            )
+        if not isinstance(relevant_ids, list) or not relevant_ids:
+            raise ValueError(f"labeled_retrieval item {case_id} needs relevant_ids.")
+        if not all(
+            isinstance(article_id, str) and article_id in catalog
+            for article_id in relevant_ids
+        ):
+            raise ValueError(
+                f"labeled_retrieval item {case_id} references a missing catalog product."
+            )
+        filters = case.get("filters", {})
+        if not isinstance(filters, dict):
+            raise ValueError(f"labeled_retrieval item {case_id} filters must be an object.")
+        validated.append(
+            {
+                "id": case_id,
+                "query": query,
+                "relevant_ids": list(dict.fromkeys(relevant_ids)),
+                "filters": filters,
+            }
+        )
+        seen_ids.add(case_id)
+    return validated
+
+
 def _evaluate_retrieval(
     *, retriever: TextRetriever, labeled_cases: list[dict[str, Any]], catalog: dict[str, Any]
 ) -> dict[str, Any]:
@@ -100,6 +182,7 @@ def _evaluate_retrieval(
     latencies: list[float] = []
     ndcgs: list[float] = []
     missing: list[str] = []
+    case_results: list[dict[str, Any]] = []
     for case in labeled_cases:
         relevant_ids = {str(article_id) for article_id in case["relevant_ids"]}
         missing.extend(sorted(relevant_ids - set(catalog)))
@@ -109,17 +192,28 @@ def _evaluate_retrieval(
         )
         latencies.append((time.perf_counter() - started) * 1000)
         result_ids = [str(item["article_id"]) for item in results]
-        ranks.append(
-            next(
-                (
-                    rank
-                    for rank, article_id in enumerate(result_ids, start=1)
-                    if article_id in relevant_ids
-                ),
-                None,
-            )
+        first_rank = next(
+            (
+                rank
+                for rank, article_id in enumerate(result_ids, start=1)
+                if article_id in relevant_ids
+            ),
+            None,
         )
-        ndcgs.append(ndcg_at_k(result_ids, relevant_ids))
+        case_ndcg = ndcg_at_k(result_ids, relevant_ids)
+        ranks.append(first_rank)
+        ndcgs.append(case_ndcg)
+        case_results.append(
+            {
+                "id": case["id"],
+                "query": case["query"],
+                "relevant_ids": sorted(relevant_ids),
+                "returned_ids": result_ids,
+                "first_relevant_rank": first_rank,
+                "ndcg_at_10": case_ndcg,
+                "latency_ms": round(latencies[-1], 3),
+            }
+        )
     total = len(ranks)
     return {
         "evaluation_source": "explicit_labeled_catalog_cases",
@@ -132,6 +226,7 @@ def _evaluate_retrieval(
         "missing_labeled_article_ids": sorted(set(missing)),
         "latency_ms_p50": statistics.median(latencies),
         "latency_ms_p95": percentile(latencies, 0.95),
+        "case_results": case_results,
     }
 
 
@@ -149,15 +244,13 @@ def main() -> int:
         return _configuration_error(args, "task_execution must contain executable agent cases.")
 
     retriever = TextRetriever(args.text_index)
-    expected_snapshot = dict(cases.get("catalog_snapshot") or {})
+    catalog = {str(item["article_id"]): item for item in retriever.products}
+    try:
+        labeled_cases = _require_labeled_cases(cases, catalog, retriever.metadata)
+    except ValueError as error:
+        return _configuration_error(args, str(error))
+    expected_snapshot = dict(cases["catalog_snapshot"])
     index_snapshot = str(retriever.metadata.get("input_sha256") or "")
-    if expected_snapshot.get("input_sha256") and (
-        expected_snapshot["input_sha256"] != index_snapshot
-    ):
-        return _configuration_error(
-            args,
-            "Catalog snapshot differs from the labeled benchmark; refresh labels before evaluating this index.",
-        )
 
     judge, judge_status = configured_llm_judge(args.llm_judge)
     if args.llm_judge == "required" and judge is None:
@@ -166,7 +259,6 @@ def main() -> int:
             "LLM judge is required but EVAL_LLM_JUDGE_API_KEY and EVAL_LLM_JUDGE_MODEL are not configured.",
         )
 
-    catalog = {str(item["article_id"]): item for item in retriever.products}
     retrieval = _evaluate_retrieval(
         retriever=retriever, labeled_cases=labeled_cases, catalog=catalog
     )
@@ -213,8 +305,10 @@ def main() -> int:
     _write_report(args.report, report)
     thresholds_ok = (
         not retrieval["missing_labeled_article_ids"]
+        and retrieval["recall_at_1"] >= args.minimum_recall_at_1
         and retrieval["recall_at_5"] >= args.minimum_recall_at_5
         and retrieval["recall_at_10"] >= args.minimum_recall_at_10
+        and retrieval["mrr_at_10"] >= args.minimum_mrr_at_10
         and retrieval["ndcg_at_10"] >= args.minimum_ndcg_at_10
         and report["intent_accuracy"] >= args.minimum_intent_accuracy
         and report["slot_accuracy"] >= args.minimum_slot_accuracy

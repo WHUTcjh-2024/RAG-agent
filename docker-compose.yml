@@ -10,15 +10,15 @@ services:
       CATALOG_DIR: /app/data/tianchi-catalog
       CATALOG_IMAGE_DIR: /app/data/tianchi-catalog/images
       IMAGE_INDEX_DIR: /app/data/vector_store/image
-      SESSION_DB_PATH: /app/data/sqlite/sessions.db
-      AGENT_MEMORY_BACKEND: ${AGENT_MEMORY_BACKEND:-sqlite}
-      AGENT_MEMORY_DATABASE_URL: ${AGENT_MEMORY_DATABASE_URL:-}
+      # All durable backend state lives in PostgreSQL (shared with java-backend).
+      CATALOG_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AGENT_MEMORY_BACKEND: postgres
+      AGENT_MEMORY_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AGENT_MEMORY_AUTO_SETUP: ${AGENT_MEMORY_AUTO_SETUP:-false}
-      # Production mode is explicit. Local compose keeps the deterministic
-      # SQLite implementation unless these values are overridden in `.env`.
-      AGENT_CHECKPOINT_BACKEND: ${AGENT_CHECKPOINT_BACKEND:-sqlite}
-      AGENT_CHECKPOINT_DATABASE_URL: ${AGENT_CHECKPOINT_DATABASE_URL:-}
+      AGENT_CHECKPOINT_BACKEND: postgres
+      AGENT_CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AGENT_CHECKPOINT_AUTO_SETUP: ${AGENT_CHECKPOINT_AUTO_SETUP:-false}
+      VTO_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AGENT_TASK_LOCK_BACKEND: ${AGENT_TASK_LOCK_BACKEND:-local}
       AGENT_REDIS_URL: ${AGENT_REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379/2}
       AGENT_TASK_LOCK_PREFIX: ${AGENT_TASK_LOCK_PREFIX:-atelier:agent:task-lock}
@@ -35,8 +35,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    volumes:
-      - ./backend/data/sqlite:/app/data/sqlite
+      backend-init:
+        condition: service_completed_successfully
     # 仅供 Docker 内部服务（Java 网关）访问，禁止绕过网关直连。
     expose:
       - "18000"
@@ -46,6 +46,30 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+  backend-init:
+    build:
+      context: ./backend
+    image: rag-agent-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      java-backend:
+        condition: service_healthy
+    environment:
+      CATALOG_DIR: /app/data/tianchi-catalog
+      CATALOG_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AGENT_MEMORY_BACKEND: postgres
+      AGENT_MEMORY_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AGENT_CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    command:
+      - sh
+      - -c
+      - >-
+        PYTHONPATH=/app python scripts/setup_catalog.py &&
+        PYTHONPATH=/app python scripts/build_catalog.py &&
+        PYTHONPATH=/app python scripts/setup_agent_memory.py &&
+        PYTHONPATH=/app python scripts/setup_agent_checkpoint.py
+    restart: "no"
   postgres:
     image: postgres:16-alpine
     environment:
@@ -75,8 +99,6 @@ services:
   java-backend:
     build: ./java-backend
     depends_on:
-      backend:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -116,6 +138,8 @@ services:
     build: ./frontend
     depends_on:
       java-backend:
+        condition: service_healthy
+      backend:
         condition: service_healthy
     ports:
       - "5173:80"

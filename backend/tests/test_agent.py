@@ -2,11 +2,14 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import os
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.tools import BaseTool
+from pydantic import ValidationError
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -24,6 +27,7 @@ from app.core.retrieval.hybrid_retriever import HybridRetriever
 from app.core.retrieval.image_retriever import ImageRetriever
 from app.core.retrieval.text_retriever import TextRetriever
 from app.main import app
+from tests.postgres_helpers import require_postgres
 from tests.test_hybrid_retrieval import build_fixture_indexes
 
 
@@ -37,6 +41,7 @@ def create_orchestrator(root: Path) -> ShoppingAgentOrchestrator:
 
 
 def test_registry_contains_real_langchain_tools(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     orchestrator = create_orchestrator(tmp_path)
     assert len(orchestrator.registry.tools) == 6
     assert all(isinstance(tool, BaseTool) for tool in orchestrator.registry.tools)
@@ -45,6 +50,7 @@ def test_registry_contains_real_langchain_tools(tmp_path: Path) -> None:
 
 
 def test_agent_recommend_compare_and_handoff_cart(tmp_path: Path) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     orchestrator = create_orchestrator(tmp_path)
     session_id = "agent-flow"
 
@@ -72,10 +78,9 @@ def test_agent_recommend_compare_and_handoff_cart(tmp_path: Path) -> None:
 class FakeHallucinatingChain:
     def invoke(self, inputs):
         return GroundedRecommendation(
-            intro="候选推荐",
             recommendations=[
-                ProductReason(article_id="9999999999", reason="虚构商品"),
-                ProductReason(article_id="0000000001", reason="真实候选商品理由"),
+                ProductReason(article_id="9999999999"),
+                ProductReason(article_id="0000000001"),
             ],
         )
 
@@ -100,9 +105,22 @@ def test_llm_product_id_whitelist_drops_hallucinations() -> None:
         slots={"color": "Red", "category": "Shirt"},
         history=[],
     )
-    assert intro == "候选推荐"
-    assert reasons == {"0000000001": "真实候选商品理由"}
+    assert intro == "根据你的需求，我从真实商品库中筛出了这些候选。"
+    assert reasons == {
+        "0000000001": "Red Shirt 属于 Shirt，颜色为 Red，来自与当前需求匹配的商品目录。"
+    }
     assert "9999999999" not in reasons
+
+
+def test_model_selection_schema_rejects_freeform_recommendation_facts() -> None:
+    with pytest.raises(ValidationError):
+        GroundedRecommendation.model_validate(
+            {
+                "recommendations": [
+                    {"article_id": "0000000001", "reason": "现货 99 元羊毛"}
+                ]
+            }
+        )
 
 
 def test_llm_failure_is_logged_and_falls_back(caplog) -> None:
@@ -130,13 +148,22 @@ def test_llm_failure_is_logged_and_falls_back(caplog) -> None:
 
 
 def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
+    memory_url = os.getenv("AGENT_MEMORY_DATABASE_URL")
+    checkpoint_url = os.getenv("AGENT_CHECKPOINT_DATABASE_URL")
+    if not memory_url or not checkpoint_url:
+        pytest.skip(
+            "AGENT_MEMORY_DATABASE_URL / AGENT_CHECKPOINT_DATABASE_URL are required "
+            "for the live agent API integration test."
+        )
     text_index, image_index, _ = build_fixture_indexes(tmp_path)
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))
     monkeypatch.setenv("IMAGE_INDEX_DIR", str(image_index))
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.setenv("SESSION_DB_PATH", str(tmp_path / "sessions.db"))
-    monkeypatch.setenv("AGENT_CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.db"))
+    monkeypatch.setenv("AGENT_MEMORY_DATABASE_URL", memory_url)
+    monkeypatch.setenv("AGENT_CHECKPOINT_DATABASE_URL", checkpoint_url)
+    monkeypatch.setenv("AGENT_MEMORY_AUTO_SETUP", "true")
+    monkeypatch.setenv("AGENT_CHECKPOINT_AUTO_SETUP", "true")
     monkeypatch.setenv("AGENT_CONTEXT_TOKEN", "test-agent-context-token")
     get_memory.cache_clear()
     get_orchestrator.cache_clear()
@@ -234,6 +261,7 @@ def test_chat_api_and_sse_tool_trace(tmp_path: Path, monkeypatch) -> None:
 def test_text_agent_works_without_optional_image_index(
     tmp_path: Path, monkeypatch
 ) -> None:
+    require_postgres("AGENT_MEMORY_DATABASE_URL")
     text_index, _, query_image = build_fixture_indexes(tmp_path / "fixtures")
     missing_image_index = tmp_path / "missing-image-index"
     monkeypatch.setenv("TEXT_INDEX_DIR", str(text_index))

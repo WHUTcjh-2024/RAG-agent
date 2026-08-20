@@ -1,4 +1,4 @@
-"""Scheduled retention job for the local SQLite development checkpointer.
+"""Scheduled retention job for the PostgreSQL agent checkpointer.
 
 Production Postgres retention is intentionally executed by the deployment
 platform/DB scheduler so API replicas never compete to delete checkpoint rows.
@@ -13,12 +13,9 @@ from app.core.agent.workflow import RecoverableShoppingAgentWorkflow
 
 
 def main() -> None:
-    backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "sqlite").strip().casefold()
-    if backend != "sqlite":
-        raise SystemExit(
-            "Postgres retention must be configured as a database scheduled job; "
-            "this script is SQLite-only."
-        )
+    backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "postgres").strip().casefold()
+    if backend != "postgres":
+        raise SystemExit("This retention job is for AGENT_CHECKPOINT_BACKEND=postgres.")
     workflow = RecoverableShoppingAgentWorkflow(get_orchestrator())
     try:
         print(f"pruned_checkpoints={workflow.prune_expired_checkpoints()}")

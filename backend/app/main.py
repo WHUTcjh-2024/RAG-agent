@@ -23,7 +23,7 @@ from app.core.catalog_paths import (
 )
 from app.core.request_id import RequestIdMiddleware, create_request_id
 from app.mcp.server import TrustedMcpContextMiddleware, get_mcp_server
-from app.db.database import get_db_path
+from app.db.database import catalog_ready
 
 
 APP_LOG_LEVEL = getattr(
@@ -122,7 +122,7 @@ async def validation_exception_handler(
 @app.get("/health")
 def health() -> dict:
     checks = {
-        "catalog": get_db_path().is_file(),
+        "catalog": catalog_ready(),
         "text_index": (get_text_index_dir() / "embeddings.npy").is_file(),
         "image_index": (get_image_index_dir() / "embeddings.npy").is_file(),
     }

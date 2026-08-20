@@ -1,19 +1,60 @@
 {
   "catalog_snapshot": {
     "input_sha256": "5dfeb404acf1ae255417c0270e68f3d8996a20c144223961d212373421ffb702",
-    "label_source": "tracked tianchi-demo catalog, manually reviewed"
+    "product_count": 10,
+    "label_source": "tracked tianchi-demo catalog, independently authored and manually reviewed"
   },
   "labeled_retrieval": [
-    {"id": "office-cotton", "query": "通勤棉质", "relevant_ids": ["0000000001"]},
-    {"id": "formal-dinner", "query": "正式晚宴", "relevant_ids": ["0000000002"]},
-    {"id": "straight-daily", "query": "直筒日常", "relevant_ids": ["0000000003"]},
-    {"id": "windproof-portable", "query": "防风便携", "relevant_ids": ["0000000004"]},
-    {"id": "lightweight-date", "query": "轻盈约会", "relevant_ids": ["0000000005"]},
-    {"id": "running-fitness", "query": "跑步健身", "relevant_ids": ["0000000006"]},
-    {"id": "soft-layering", "query": "柔软叠穿", "relevant_ids": ["0000000007"]},
-    {"id": "tailored-city", "query": "利落版型", "relevant_ids": ["0000000008"]},
-    {"id": "comfortable-weekend", "query": "舒适宽松", "relevant_ids": ["0000000009"]},
-    {"id": "summer-travel", "query": "夏季旅行", "relevant_ids": ["0000000010"]}
+    {
+      "id": "office-light-shirt",
+      "query": "上班穿的浅色衬衣，版型干净利落",
+      "relevant_ids": ["0000000001"]
+    },
+    {
+      "id": "formal-evening-dress",
+      "query": "正式晚宴需要一条深色简约裙装",
+      "relevant_ids": ["0000000002"]
+    },
+    {
+      "id": "casual-straight-denim",
+      "query": "日常通勤想找一条蓝色直筒牛仔长裤",
+      "relevant_ids": ["0000000003"]
+    },
+    {
+      "id": "spring-windbreaker",
+      "query": "春秋出门挡风的红色轻外套",
+      "relevant_ids": ["0000000004"]
+    },
+    {
+      "id": "date-skirt",
+      "query": "春日约会穿的粉色轻盈半身裙",
+      "relevant_ids": ["0000000005"]
+    },
+    {
+      "id": "running-shorts",
+      "query": "跑步健身时穿的轻便灰色下装",
+      "relevant_ids": ["0000000006"]
+    },
+    {
+      "id": "layering-cardigan",
+      "query": "办公室空调房适合叠穿的米色针织开衫",
+      "relevant_ids": ["0000000007"]
+    },
+    {
+      "id": "city-jacket",
+      "query": "城市出行搭配的棕色短款夹克",
+      "relevant_ids": ["0000000008"]
+    },
+    {
+      "id": "weekend-hoodie",
+      "query": "周末休闲运动穿的宽松黄色连帽上衣",
+      "relevant_ids": ["0000000009"]
+    },
+    {
+      "id": "travel-sun-shirt",
+      "query": "夏天旅行防晒又轻薄的紫色长袖衬衫",
+      "relevant_ids": ["0000000010"]
+    }
   ],
   "intent": [
     ["推荐白色衬衫", false, "text_recommendation"],

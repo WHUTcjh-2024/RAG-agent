@@ -7,6 +7,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # All durable stores moved from SQLite to PostgreSQL; the integration
+      # tests and the agent-harness evaluation need a real database to run
+      # against (they self-provision their schema via *_AUTO_SETUP).
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: atelier_test
+          POSTGRES_USER: atelier
+          POSTGRES_PASSWORD: atelier-ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atelier -d atelier_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGENT_MEMORY_DATABASE_URL: postgresql://atelier:atelier-ci-postgres-password@localhost:5432/atelier_test
+      AGENT_CHECKPOINT_DATABASE_URL: postgresql://atelier:atelier-ci-postgres-password@localhost:5432/atelier_test
+      AGENT_MEMORY_AUTO_SETUP: "true"
+      AGENT_CHECKPOINT_AUTO_SETUP: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,7 +38,7 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: python -m pytest backend/tests -q
       - run: python backend/scripts/build_text_index.py --input_csv backend/data/tianchi-demo/articles_sample.csv --backend hashing --index_dir /tmp/agent-evaluation-index
-      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_ndcg_at_10 0.64 --minimum_task_success_rate 1 --minimum_tool_argument_accuracy 1 --minimum_fact_citation_coverage 1 --minimum_refusal_injection_pass_rate 1 --minimum_business_execution_pass_rate 1
+      - run: python backend/scripts/evaluate_recommendations.py --text_index /tmp/agent-evaluation-index --report /tmp/agent-evaluation.json --minimum_recall_at_1 0.70 --minimum_recall_at_5 0.95 --minimum_recall_at_10 0.95 --minimum_mrr_at_10 0.80 --minimum_ndcg_at_10 0.80 --minimum_task_success_rate 1 --minimum_tool_argument_accuracy 1 --minimum_fact_citation_coverage 1 --minimum_refusal_injection_pass_rate 1 --minimum_business_execution_pass_rate 1
       - run: python backend/scripts/evaluate_agent_harness.py --text-index /tmp/agent-evaluation-index --report /tmp/agent-harness-evaluation.json
       - uses: actions/setup-node@v4
         with:

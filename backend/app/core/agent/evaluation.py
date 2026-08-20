@@ -301,7 +301,7 @@ class AgentEvaluationRunner:
         with tempfile.TemporaryDirectory(
             prefix="agent-eval-", ignore_cleanup_errors=True
         ) as directory:
-            memory = AgentMemoryStore(os.path.join(directory, "sessions.db"))
+            memory = AgentMemoryStore()
             # Evaluating a fixture must never issue an unbudgeted production LLM call.
             with _temporary_environment(LLM_ENABLED="false"):
                 orchestrator = ShoppingAgentOrchestrator(
@@ -310,7 +310,7 @@ class AgentEvaluationRunner:
                     hybrid_retriever=None,
                     memory=memory,
                     reason_generator=GroundedRecommendationGenerator(
-                        chain=None, streaming_llm=None
+                        chain=None
                     ),
                 )
                 response = orchestrator.handle(
@@ -319,7 +319,7 @@ class AgentEvaluationRunner:
                     language="en",
                     request_id=f"eval-{case['id']}",
                 )
-                # AgentMemoryStore opens short-lived SQLite connections.  Releasing the
+                # AgentMemoryStore opens short-lived PostgreSQL connections.  Releasing the
                 # owners before TemporaryDirectory exits keeps Windows cleanup reliable.
                 del orchestrator
                 del memory
@@ -411,7 +411,7 @@ class AgentEvaluationRunner:
                     product=dict(case["product"]),
                     language="en",
                 )
-            memory = AgentMemoryStore(os.path.join(directory, "sessions.db"))
+            memory = AgentMemoryStore()
             memory.save_pending_action(action, "evaluation-user", f"eval-{case['id']}")
             first = memory.complete_action(action["action_id"], "evaluation-user", "cart-item")
             second = memory.complete_action(action["action_id"], "evaluation-user", "cart-item")

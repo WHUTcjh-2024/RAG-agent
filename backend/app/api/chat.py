@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 _workflow_guard = Lock()
 _workflow_instance: RecoverableShoppingAgentWorkflow | None = None
 _workflow_orchestrator: ShoppingAgentOrchestrator | None = None
-_workflow_path: str | None = None
 _CONTEXT_TOKEN_HEADER = "X-Agent-Context-Token"
 
 
@@ -105,30 +104,23 @@ def get_orchestrator() -> ShoppingAgentOrchestrator:
 def get_workflow(
     orchestrator: ShoppingAgentOrchestrator,
 ) -> RecoverableShoppingAgentWorkflow:
-    global _workflow_instance, _workflow_orchestrator, _workflow_path
-    configured_path = os.getenv("AGENT_CHECKPOINT_DB_PATH", "").strip()
+    global _workflow_instance, _workflow_orchestrator
     with _workflow_guard:
-        if (
-            _workflow_instance is None
-            or _workflow_orchestrator is not orchestrator
-            or _workflow_path != configured_path
-        ):
+        if _workflow_instance is None or _workflow_orchestrator is not orchestrator:
             if _workflow_instance is not None:
                 _workflow_instance.close()
             _workflow_instance = RecoverableShoppingAgentWorkflow(orchestrator)
             _workflow_orchestrator = orchestrator
-            _workflow_path = configured_path
         return _workflow_instance
 
 
 def reset_workflow() -> None:
-    global _workflow_instance, _workflow_orchestrator, _workflow_path
+    global _workflow_instance, _workflow_orchestrator
     with _workflow_guard:
         if _workflow_instance is not None:
             _workflow_instance.close()
         _workflow_instance = None
         _workflow_orchestrator = None
-        _workflow_path = None
 
 
 async def save_upload(file: UploadFile | None) -> str | None:

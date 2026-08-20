@@ -147,11 +147,9 @@ def main() -> int:
                 text_retriever=retriever,
                 image_retriever=None,
                 hybrid_retriever=None,
-                memory=AgentMemoryStore(root / "sessions.db"),
+                memory=AgentMemoryStore(),
             )
-            workflow = RecoverableShoppingAgentWorkflow(
-                orchestrator, root / "checkpoints.db"
-            )
+            workflow = RecoverableShoppingAgentWorkflow(orchestrator)
             try:
                 results = [
                     evaluate_case(workflow, orchestrator, case, product_ids)

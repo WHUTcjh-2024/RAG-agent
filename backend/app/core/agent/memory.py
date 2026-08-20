@@ -3,11 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
-from pathlib import Path
 from threading import RLock
 from typing import Any
 
@@ -15,12 +13,9 @@ from langchain_core.chat_history import InMemoryChatMessageHistory
 
 from app.core.agent.contracts import ErrorCode
 from app.core.agent.errors import AgentException
+from app.db.pg import PgConnection, connect as _pg_connect, database_url
 
 
-DEFAULT_SESSION_DB = (
-    Path(__file__).resolve().parents[3] / "data" / "sqlite" / "sessions.db"
-)
-DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
 
 
@@ -57,6 +52,9 @@ def _auto_setup_enabled() -> bool:
     }
 
 
+DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
 @dataclass
 class SessionState:
     history: InMemoryChatMessageHistory = field(
@@ -67,87 +65,33 @@ class SessionState:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class _PostgresConnection:
-    """Minimal DB-API adapter so durable agent state has one SQL definition.
+class AgentMemoryStore:
+    """Durable agent session state, persisted in PostgreSQL.
 
-    Existing SQL deliberately uses `?` bind markers. Translating at this thin
-    boundary keeps queries parameterized while allowing the production backend
-    to use psycopg's `%s` markers and dict rows.
+    The store is the single source of truth for cancellation, completion and
+    session ownership so those guarantees hold across API replicas.
     """
 
-    def __init__(self, connection) -> None:
-        self._connection = connection
-
-    def __enter__(self) -> "_PostgresConnection":
-        self._connection.__enter__()
-        return self
-
-    def __exit__(self, *args) -> None:
-        try:
-            self._connection.__exit__(*args)
-        finally:
-            self._connection.close()
-
-    def execute(self, query: str, values: tuple | list = ()):
-        statement = "BEGIN" if query.strip().upper() == "BEGIN IMMEDIATE" else query
-        return self._connection.execute(statement.replace("?", "%s"), values)
-
-
-class AgentMemoryStore:
-    """Durable agent session state; SQLite locally and Postgres across replicas."""
-
-    def __init__(self, sqlite_path: str | Path | None = None) -> None:
-        self._storage_backend = (
-            os.getenv("AGENT_MEMORY_BACKEND", "sqlite").strip().casefold()
-        )
-        if self._storage_backend not in {"sqlite", "postgres"}:
-            raise RuntimeError("AGENT_MEMORY_BACKEND must be 'sqlite' or 'postgres'.")
-        configured = os.getenv("SESSION_DB_PATH", "").strip()
-        self.sqlite_path = (
-            Path(sqlite_path or configured or DEFAULT_SESSION_DB).resolve()
-            if self._storage_backend == "sqlite"
-            else None
-        )
-        if self.sqlite_path is not None:
-            self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self._database_url = os.getenv("AGENT_MEMORY_DATABASE_URL", "").strip()
-        if self._storage_backend == "postgres" and not self._database_url:
-            raise RuntimeError(
-                "AGENT_MEMORY_DATABASE_URL is required when AGENT_MEMORY_BACKEND=postgres."
-            )
+    def __init__(self) -> None:
+        configured_backend = os.getenv("AGENT_MEMORY_BACKEND", "postgres").strip().casefold()
+        if configured_backend not in {"postgres"}:
+            raise RuntimeError("AGENT_MEMORY_BACKEND must be 'postgres'.")
+        self._database_url = database_url("AGENT_MEMORY_DATABASE_URL")
         self.session_ttl_seconds = _read_session_ttl_seconds()
         self._sessions: dict[str, SessionState] = {}
-        self._cache_enabled = self._storage_backend == "sqlite"
+        self._cache_enabled = False
         self._lock = RLock()
-        self._needs_setup = self._storage_backend == "sqlite" or _auto_setup_enabled()
+        self._needs_setup = _auto_setup_enabled()
         if self._needs_setup:
             self.setup()
             self.cleanup_expired()
 
-    def _connect(self):
-        if self._storage_backend == "sqlite":
-            assert self.sqlite_path is not None
-            connection = sqlite3.connect(self.sqlite_path, timeout=10)
-            connection.row_factory = sqlite3.Row
-            return connection
-        try:
-            import psycopg
-            from psycopg.rows import dict_row
-        except ImportError as error:  # pragma: no cover - production dependency guard
-            raise RuntimeError(
-                "psycopg is required for the Postgres agent memory backend."
-            ) from error
-        return _PostgresConnection(
-            psycopg.connect(
-                self._database_url,
-                row_factory=dict_row,
-                connect_timeout=3,
-            )
-        )
+    def _connect(self) -> PgConnection:
+        return _pg_connect("AGENT_MEMORY_DATABASE_URL")
 
     def setup(self) -> None:
         """Deploy migration entrypoint; API startup uses it only when opted in."""
-        timestamp_type = "TEXT" if self._storage_backend == "sqlite" else "TIMESTAMPTZ"
+        timestamp_type = "TIMESTAMPTZ"
         with self._connect() as connection:
             connection.execute(
                 f"""
@@ -162,8 +106,11 @@ class AgentMemoryStore:
                 """
             )
             session_columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(agent_sessions)")
+                str(row["column_name"])
+                for row in connection.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'agent_sessions'"
+                )
             }
             if "owner_user_id" not in session_columns:
                 connection.execute(
@@ -233,7 +180,7 @@ class AgentMemoryStore:
         state.last_results = json.loads(row["last_results_json"])
         updated_at = row["updated_at"]
         state.updated_at = (
-            updated_at.astimezone(timezone.utc)
+            updated_at
             if isinstance(updated_at, datetime)
             else datetime.strptime(str(updated_at), "%Y-%m-%d %H:%M:%S").replace(
                 tzinfo=timezone.utc
@@ -272,7 +219,6 @@ class AgentMemoryStore:
         cutoff = datetime.now(timezone.utc) - timedelta(
             seconds=self.session_ttl_seconds
         )
-        cutoff_value = cutoff.strftime("%Y-%m-%d %H:%M:%S")
         with self._lock:
             expired_cached = [
                 session_id
@@ -283,11 +229,11 @@ class AgentMemoryStore:
                 self._sessions.pop(session_id, None)
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "DELETE FROM agent_sessions WHERE updated_at < ?", (cutoff_value,)
+                    "DELETE FROM agent_sessions WHERE updated_at < ?", (cutoff,)
                 )
                 connection.execute(
                     "DELETE FROM agent_task_controls WHERE updated_at < ?",
-                    (cutoff_value,),
+                    (cutoff,),
                 )
                 connection.execute(
                     "DELETE FROM agent_task_commits WHERE session_id NOT IN (SELECT session_id FROM agent_sessions)"
@@ -358,19 +304,23 @@ class AgentMemoryStore:
         session_id = validate_session_id(session_id)
         user_id = self._validate_owner_user_id(user_id)
         with self._lock, self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            created = connection.execute(
+                """
+                INSERT INTO agent_sessions(session_id, owner_user_id)
+                VALUES (?, ?)
+                ON CONFLICT(session_id) DO NOTHING
+                RETURNING owner_user_id
+                """,
+                (session_id, user_id),
+            ).fetchone()
+            if created is not None:
+                return True
             row = connection.execute(
                 "SELECT owner_user_id FROM agent_sessions WHERE session_id=?",
                 (session_id,),
             ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO agent_sessions(session_id, owner_user_id) VALUES (?, ?)",
-                    (session_id, user_id),
-                )
-                return True
-            owner_user_id = row["owner_user_id"]
-            return owner_user_id is not None and str(owner_user_id) == user_id
+        owner_user_id = row["owner_user_id"] if row is not None else None
+        return owner_user_id is not None and str(owner_user_id) == user_id
 
     def task_ids_for_owned_session(self, session_id: str, user_id: str) -> list[str] | None:
         session_id = validate_session_id(session_id)
@@ -402,7 +352,6 @@ class AgentMemoryStore:
         session_id = validate_session_id(session_id)
         user_id = self._validate_owner_user_id(user_id)
         with self._lock, self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             deleted = connection.execute(
                 "DELETE FROM agent_sessions WHERE session_id=? AND owner_user_id=?",
                 (session_id, user_id),
@@ -526,7 +475,6 @@ class AgentMemoryStore:
         """Atomically commit one workflow turn once, even when a node is retried."""
         session_id = validate_session_id(session_id)
         with self._lock, self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             claim = connection.execute(
                 """
                 INSERT INTO agent_task_commits (task_id, session_id)
@@ -573,6 +521,12 @@ class AgentMemoryStore:
     def save_pending_action(
         self, action: dict[str, Any], user_id: str, task_id: str
     ) -> None:
+        raw_expires = action["expires_at"]
+        expires_at = (
+            datetime.fromisoformat(str(raw_expires).replace("Z", "+00:00"))
+            if isinstance(raw_expires, str)
+            else raw_expires
+        )
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
@@ -580,7 +534,7 @@ class AgentMemoryStore:
                 VALUES (?, ?, ?, 'pending', ?)
                 ON CONFLICT(action_id) DO NOTHING
                 """,
-                (action["action_id"], task_id, user_id, action["expires_at"]),
+                (action["action_id"], task_id, user_id, expires_at),
             )
 
     def complete_action(self, action_id: str, user_id: str, cart_item_id: str) -> bool:

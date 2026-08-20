@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from psycopg import Error as PgError
 
 from app.db.database import connect, product_to_dict
 
@@ -23,19 +24,19 @@ def list_products(
     clauses: list[str] = []
     parameters: list[object] = []
     if category:
-        clauses.append("product_type_name LIKE ?")
+        clauses.append("product_type_name ILIKE ?")
         parameters.append(f"%{category.strip()}%")
     if color:
-        clauses.append("colour_group_name LIKE ?")
+        clauses.append("colour_group_name ILIKE ?")
         parameters.append(f"%{color.strip()}%")
     if group:
-        clauses.append("product_group_name LIKE ?")
+        clauses.append("product_group_name ILIKE ?")
         parameters.append(f"%{group.strip()}%")
     if index_group:
         clauses.append("index_group_name = ?")
         parameters.append(index_group.strip())
     if search:
-        clauses.append("(prod_name LIKE ? OR detail_desc LIKE ?)")
+        clauses.append("(prod_name ILIKE ? OR detail_desc ILIKE ?)")
         value = f"%{search.strip()}%"
         parameters.extend((value, value))
     if max_price is not None:
@@ -50,7 +51,7 @@ def list_products(
             ).fetchone()[0]
             order_by = {
                 "article_id": "article_id",
-                "name": "prod_name COLLATE NOCASE, article_id",
+                "name": "LOWER(prod_name), article_id",
                 "popular": "popularity_score DESC, article_id",
             }[sort]
             rows = connection.execute(
@@ -59,7 +60,7 @@ def list_products(
                 + f" ORDER BY {order_by} LIMIT ? OFFSET ?",
                 [*parameters, page_size, offset],
             ).fetchall()
-    except FileNotFoundError as error:
+    except (RuntimeError, PgError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return {
         "page": page,
@@ -91,7 +92,7 @@ def product_facets() -> dict:
                 "index_groups": values("index_group_name"),
                 "price_range": [price[0], price[1]] if price[0] is not None else None,
             }
-    except FileNotFoundError as error:
+    except (RuntimeError, PgError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
@@ -102,7 +103,7 @@ def get_product(article_id: str) -> dict:
             row = connection.execute(
                 "SELECT * FROM products WHERE article_id = ?", (article_id,)
             ).fetchone()
-    except FileNotFoundError as error:
+    except (RuntimeError, PgError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if row is None:
         raise HTTPException(status_code=404, detail="Product not found.")

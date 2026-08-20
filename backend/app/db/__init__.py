@@ -1,1 +1,1 @@
-"""SQLite database access."""
+"""PostgreSQL catalog database access."""

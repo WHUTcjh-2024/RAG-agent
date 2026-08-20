@@ -3,10 +3,11 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import io
-import sqlite3
+import os
 import sys
 from pathlib import Path
 
+import psycopg
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -18,6 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 from app.api import try_on
 from app.core.virtual_try_on import SyntheticBodyProfile, VirtualTryOnService, VirtualTryOnSettings
 from app.main import app
+from tests.postgres_helpers import require_postgres
 
 
 def _jpeg(width: int = 900, height: int = 1200) -> bytes:
@@ -38,15 +40,22 @@ class _FakeProvider:
         return _jpeg()
 
 
-def _catalog(tmp_path: Path) -> tuple[Path, Path]:
+def _catalog(tmp_path: Path) -> tuple[str, Path]:
+    """Provision a throwaway catalog row in PostgreSQL.
+
+    The render path reads ``products`` (by ``article_id``) and loads the garment
+    image from ``CATALOG_IMAGE_DIR``; ``CATALOG_DATABASE_URL`` must point at a
+    database reserved for tests.
+    """
+    require_postgres("CATALOG_DATABASE_URL")
     image_dir = tmp_path / "catalog" / "images"
     image_dir.mkdir(parents=True)
     (image_dir / "garment.jpg").write_bytes(_jpeg())
-    database = tmp_path / "catalog.db"
-    with sqlite3.connect(database) as connection:
+    url = os.environ["CATALOG_DATABASE_URL"]
+    with psycopg.connect(url, connect_timeout=5) as connection:
         connection.execute(
             """
-            CREATE TABLE products (
+            CREATE TABLE IF NOT EXISTS products (
                 article_id TEXT PRIMARY KEY,
                 prod_name TEXT,
                 product_type_name TEXT,
@@ -57,16 +66,18 @@ def _catalog(tmp_path: Path) -> tuple[Path, Path]:
             """
         )
         connection.execute(
-            "INSERT INTO products VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO products VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT(article_id) DO UPDATE SET image_path = excluded.image_path",
             ("dress-1", "Cerise Dress", "连衣裙", "服装", "连衣裙", "images/garment.jpg"),
         )
-    return database, image_dir
+    return url, image_dir
 
 
 def _service(tmp_path: Path, provider: _FakeProvider) -> VirtualTryOnService:
+    require_postgres("VTO_DATABASE_URL")
     return VirtualTryOnService(
         VirtualTryOnSettings(
-            database_path=tmp_path / "tryon" / "jobs.db",
+            database_url=os.environ["VTO_DATABASE_URL"],
             media_dir=tmp_path / "tryon" / "media",
             provider_url="https://provider.example.test/v1/generate",
             provider_api_key="",
@@ -105,7 +116,7 @@ def test_internal_render_bridge_requires_service_credential(tmp_path: Path, monk
     database, image_dir = _catalog(tmp_path)
     provider = _FakeProvider()
     service = _service(tmp_path, provider)
-    monkeypatch.setenv("CATALOG_DB_PATH", str(database))
+    monkeypatch.setenv("CATALOG_DATABASE_URL", database)
     monkeypatch.setenv("CATALOG_IMAGE_DIR", str(image_dir))
     monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "internal-test-token")
     monkeypatch.setattr(try_on, "get_try_on_service", lambda: service)
@@ -127,7 +138,7 @@ def test_internal_render_bridge_requires_service_credential(tmp_path: Path, monk
 def test_internal_render_bridge_rejects_impossible_body_values(tmp_path: Path, monkeypatch) -> None:
     database, image_dir = _catalog(tmp_path)
     service = _service(tmp_path, _FakeProvider())
-    monkeypatch.setenv("CATALOG_DB_PATH", str(database))
+    monkeypatch.setenv("CATALOG_DATABASE_URL", database)
     monkeypatch.setenv("CATALOG_IMAGE_DIR", str(image_dir))
     monkeypatch.setenv("AGENT_INTERNAL_TOKEN", "internal-test-token")
     monkeypatch.setattr(try_on, "get_try_on_service", lambda: service)
