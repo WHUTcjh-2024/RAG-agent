@@ -6,6 +6,7 @@ import static org.mockito.Mockito.reset;
 
 import com.atelier.gateway.catalog.CatalogProductGateway;
 import com.atelier.gateway.catalog.CatalogProductSnapshot;
+import com.atelier.gateway.decision.ProductSkuFactRepository;
 import com.atelier.gateway.user.UserRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,6 +43,9 @@ class OrderControllerIntegrationTest {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private ProductSkuFactRepository productSkuFactRepository;
+
     @MockBean
     private CatalogProductGateway catalogProductGateway;
 
@@ -68,6 +72,7 @@ class OrderControllerIntegrationTest {
             // The first RED run happens before the order migration exists.
         }
         jdbcTemplate.update("DELETE FROM cart_items");
+        productSkuFactRepository.deleteAll();
         reset(catalogProductGateway);
         userRepository.deleteAll();
         Cache orderLists = cacheManager.getCache("orderLists");
@@ -142,6 +147,32 @@ class OrderControllerIntegrationTest {
             .expectStatus().isBadRequest()
             .expectBody()
             .jsonPath("$.detail").isEqualTo("No selected cart items");
+    }
+
+    @Test
+    void staleCatalogPriceRefreshesCartAndPreventsOrder() {
+        String token = registerAndToken("price-refresh@example.com");
+        addItem(token, "sku-price", "Wool Coat", "/media/coat.png", "129.99", 1)
+            .expectStatus().isOk();
+        given(catalogProductGateway.fetch("sku-price")).willReturn(new CatalogProductSnapshot(
+            "sku-price", "Wool Coat 2026", "/media/coat-2026.png", new java.math.BigDecimal("149.99")
+        ));
+
+        createOrder(token, "price-refresh-001")
+            .expectStatus().isEqualTo(409)
+            .expectBody()
+            .jsonPath("$.detail").isEqualTo("Cart price changed; review the refreshed cart");
+
+        webTestClient.get()
+            .uri("/api/cart")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.items.length()").isEqualTo(1)
+            .jsonPath("$.items[0].productName").isEqualTo("Wool Coat 2026")
+            .jsonPath("$.items[0].unitPrice").isEqualTo(149.99);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM orders", Integer.class)).isZero();
     }
 
     @Test
