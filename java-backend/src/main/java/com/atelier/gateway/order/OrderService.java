@@ -23,6 +23,8 @@ public class OrderService {
     private final UserRepository userRepository;
     private final JwtTokenService jwtTokenService;
     private final OrderListCache orderListCache;
+    private final CheckoutCatalogSnapshotLoader checkoutCatalogSnapshotLoader;
+    private final CheckoutRuleChain checkoutRuleChain;
 
     public OrderService(
         CartItemRepository cartItemRepository,
@@ -30,7 +32,9 @@ public class OrderService {
         OrderItemRepository orderItemRepository,
         UserRepository userRepository,
         JwtTokenService jwtTokenService,
-        OrderListCache orderListCache
+        OrderListCache orderListCache,
+        CheckoutCatalogSnapshotLoader checkoutCatalogSnapshotLoader,
+        CheckoutRuleChain checkoutRuleChain
     ) {
         this.cartItemRepository = cartItemRepository;
         this.orderRepository = orderRepository;
@@ -38,9 +42,11 @@ public class OrderService {
         this.userRepository = userRepository;
         this.jwtTokenService = jwtTokenService;
         this.orderListCache = orderListCache;
+        this.checkoutCatalogSnapshotLoader = checkoutCatalogSnapshotLoader;
+        this.checkoutRuleChain = checkoutRuleChain;
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = CartPriceChangedException.class)
     public OrderDetailView createOrder(String authorizationHeader, String idempotencyKey) {
         UUID userId = currentUserId(authorizationHeader);
         String key = requireIdempotencyKey(idempotencyKey);
@@ -83,6 +89,19 @@ public class OrderService {
         List<CartItem> selectedItems = cartItemRepository.findByUserIdAndSelectedTrueOrderByCreatedAtAsc(userId);
         if (selectedItems.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "No selected cart items");
+        }
+
+        CheckoutRuleChain.CheckoutValidationResult validation = checkoutRuleChain.validate(
+            checkoutCatalogSnapshotLoader.load(selectedItems)
+        );
+        validation.requireAllowed();
+        if (validation.hasPriceChanges()) {
+            validation.changedPriceSnapshots().forEach(snapshot -> snapshot.cartItem().refreshSnapshot(
+                snapshot.snapshot().productName(),
+                snapshot.snapshot().productImageUrl(),
+                snapshot.snapshot().unitPrice()
+            ));
+            throw new CartPriceChangedException();
         }
 
         BigDecimal totalAmount = selectedItems.stream()

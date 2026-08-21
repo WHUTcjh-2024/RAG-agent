@@ -107,6 +107,13 @@ public class CartItem {
         this.updatedAt = Instant.now();
     }
 
+    public void refreshSnapshot(String productName, String productImageUrl, BigDecimal unitPrice) {
+        this.productName = productName;
+        this.productImageUrl = productImageUrl;
+        this.unitPrice = unitPrice;
+        this.updatedAt = Instant.now();
+    }
+
     public UUID getId() {
         return id;
     }
